@@ -275,14 +275,18 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         # Current status area
         btn_frame = ttk.Frame(self.current_status)
         btn_frame.pack(pady=5)
-        ttk.Button(btn_frame, text="Show IP", command=self._show_ip)\
-            .pack(side=tk.LEFT, padx=(0,10))
-        ttk.Button(btn_frame, text="Rescan", command=self._on_rescan)\
-            .pack(side=tk.LEFT)
         self.status_label = ttk.Label(
             self.current_status, text="Status: Idle"
         )
         self.status_label.pack(pady=(5,0))
+
+        # Button area
+        frame = ttk.Frame(self.button_area)
+        frame.pack(pady=5)
+        ttk.Button(frame, text="Show IP", command=self._show_ip)\
+            .pack(side=tk.LEFT, padx=(0,10))
+        ttk.Button(frame, text="Rescan", command=self._on_rescan)\
+            .pack(side=tk.LEFT)
 
         # Subscribe to device + command events
         service.subscribe_devices(self._on_device_event)
@@ -367,6 +371,8 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
 if __name__ == '__main__':
     root = tk.Tk()
     tkstyle.init_style(root)
+    root.minsize(600, 600)     # minimum width=600px, height=400px
+    root.title("Pineapple Listener UI")
 
     print("Starting Discovery Service...")
     disco = DiscoveryService('config.yaml')
