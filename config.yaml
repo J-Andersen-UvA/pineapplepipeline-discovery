@@ -1,0 +1,14 @@
+devices:
+  - hostname: Vislabs-iPhone.local
+    attached_name: iPhone Vislab
+    script: "scripts/example.py"
+  - hostname: Signlabs-iPhone.local
+    attached_name: iPhone SignLab
+    script: "scripts/example.py"
+  - hostname: ShogunLive.local
+    attached_name: Shogun Live API
+    script: "scripts/example.py"
+  - hostname: OBS.local
+    attached_name: OBS API
+    script: "scripts/example.py"
+
