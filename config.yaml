@@ -12,3 +12,8 @@ devices:
     attached_name: OBS API
     script: "scripts/example.py"
 
+server:
+  ws_port: 8765
+  ws_addr: "localhost"
+  http_port: 8000
+  http_addr: "localhost"

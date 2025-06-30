@@ -19,12 +19,11 @@ class DiscoveryService:
     def __init__(
         self,
         config_path='config.yaml',
-        http_port=8000,
         zeroconf_type: str = '_mocap._tcp.local.',
-        ws_port: int = 8765
     ):
         # 1) Load expected devices
-        self.expected = self._load_config(config_path)
+        self.config = self._load_config(config_path)
+        self.expected = self.config[0]
         self.device_states = {
             d['attached_name']: {'hostname': d['hostname'], 'ip': None, 'connected': False}
             for d in self.expected
@@ -46,11 +45,12 @@ class DiscoveryService:
         threading.Thread(target=self._zc_cleanup_loop, daemon=True).start()
 
         # 4) HTTP endpoint for JSON POSTs
-        self._http_server = HTTPServer(('0.0.0.0', http_port), self._make_handler())
+        http_address, http_port = self.config[1].get('http_addr'), self.config[1].get('http_port')
+        self._http_server = HTTPServer((http_address, http_port), self._make_handler())
         threading.Thread(target=self._http_server.serve_forever, daemon=True).start()
 
         # 5) WebSocket server for JSON messages
-        self._ws_port = ws_port
+        self._ws_port, self._ws_address = self.config[1].get('ws_port'), self.config[1].get('ws_address')
         threading.Thread(target=self._start_ws_server, daemon=True).start()
 
     def _load_config(self, path):
@@ -58,7 +58,7 @@ class DiscoveryService:
             raise FileNotFoundError(f"Config file not found: {path}")
         with open(path) as f:
             data = yaml.safe_load(f)
-        return data.get('devices', [])
+        return (data.get('devices', []), data.get('server', None))
 
     def subscribe_devices(self, cb):
         self._device_subscribers.append(cb)
@@ -200,7 +200,7 @@ class DiscoveryService:
         async def _run_server():
             server = await websockets.serve(
                 self._ws_handler,
-                '0.0.0.0',
+                self._ws_address,
                 self._ws_port,
                 family=socket.AF_INET   # IPv4-only to avoid any OS hiccups
             )
@@ -360,7 +360,7 @@ if __name__ == '__main__':
     tkstyle.init_style(root)
 
     print("Starting Discovery Service...")
-    disco = DiscoveryService('config.yaml', http_port=8000, ws_port=8765)
+    disco = DiscoveryService('config.yaml')
     print("Discovery Service started.")
 
     print("Initializing UI...")
