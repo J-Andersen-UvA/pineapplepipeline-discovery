@@ -45,12 +45,13 @@ class DiscoveryService:
         threading.Thread(target=self._zc_cleanup_loop, daemon=True).start()
 
         # 4) HTTP endpoint for JSON POSTs
-        http_address, http_port = self.config[1].get('http_addr'), self.config[1].get('http_port')
+        self.server = self.config[1]
+        http_address, http_port = self.server.get('http_addr'), self.server.get('http_port')
         self._http_server = HTTPServer((http_address, http_port), self._make_handler())
         threading.Thread(target=self._http_server.serve_forever, daemon=True).start()
 
         # 5) WebSocket server for JSON messages
-        self._ws_port, self._ws_address = self.config[1].get('ws_port'), self.config[1].get('ws_address')
+        self._ws_port, self._ws_address = self.server.get('ws_port'), self.server.get('ws_address')
         threading.Thread(target=self._start_ws_server, daemon=True).start()
 
     def _load_config(self, path):
@@ -297,34 +298,37 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
 
     def _on_command_event(self, cmd):
         ctype = cmd.get('type')
-        name = cmd.get('name')
+        # prefer 'value' if it exists, otherwise fall back to 'name'
+        disp = cmd.get('value') or cmd.get('name') or '<unknown>'
 
         # Log in Last Messages
         self.after(0, lambda: self.msg_list.insert(
             tk.END,
-            f"{time.strftime('%H:%M:%S')} – {ctype}: {name}"
+            f"{time.strftime('%H:%M:%S')} – {ctype}: {disp}"
         ))
         # Update status label
         self.after(0, lambda: self.status_label.config(
-            text=f"Last: {ctype} – {name}"
+            text=f"Last: {ctype} – {disp}"
         ))
+        # Scroll to bottom
+        self.after(0, lambda: self.msg_list.see(tk.END))
 
         # Manage Zeroconf checkboxes
-        if ctype == 'zeroconf' and name not in self.zc_vars:
+        if ctype == 'zeroconf' and disp not in self.zc_vars:
             var = tk.BooleanVar(value=True)
             cb = tk.Checkbutton(
-                self.zeroconf, text=name,
+                self.zeroconf, text=disp,
                 variable=var, anchor='w'
             )
             cb.pack(fill=tk.X, padx=5, pady=2)
-            self.zc_vars[name] = var
-            self.zc_buttons[name] = cb
+            self.zc_vars[disp] = var
+            self.zc_buttons[disp] = cb
 
         elif ctype == 'zeroconf_removed':
-            cb = self.zc_buttons.pop(name, None)
+            cb = self.zc_buttons.pop(disp, None)
             if cb:
                 self.after(0, cb.destroy)
-            self.zc_vars.pop(name, None)
+            self.zc_vars.pop(disp, None)
 
     def _show_ip(self):
         checked = [n for n, var in self.device_vars.items() if var.get()]
