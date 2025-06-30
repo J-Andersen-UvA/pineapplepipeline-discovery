@@ -14,6 +14,7 @@ import websockets
 import tkinterStyle as tkstyle
 from PluginManager import PluginManager  # your step-2 script
 
+MAX_MESSAGE_LENGTH = 100  # max length of messages in the UI
 
 class DiscoveryService:
     def __init__(
@@ -312,6 +313,10 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         ))
         # Scroll to bottom
         self.after(0, lambda: self.msg_list.see(tk.END))
+
+        # Trim the top of the list if too long
+        if self.msg_list.size() > MAX_MESSAGE_LENGTH:
+            self.after(0, lambda: self.msg_list.delete(0))
 
         # Manage Zeroconf checkboxes
         if ctype == 'zeroconf' and disp not in self.zc_vars:
