@@ -1,9 +1,0 @@
-devices:
-  - hostname: Vislabs-iPhone.local
-    attached_name: iPhone Vislab
-  - hostname: Signlabs-iPhone.local
-    attached_name: iPhone SignLab
-  - hostname: ShogunLive.local
-    attached_name: Shogun Live
-  - hostname: OBS.local
-    attached_name: OBS
