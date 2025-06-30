@@ -49,6 +49,10 @@ class DiscoveryUI(ttk.Frame):
         self.current_status = SectionFrame(self, "Current Status")
         self.current_status.grid(row=3, column=0, sticky="ew", padx=5, pady=(2,5))
 
+        # 5) Button area
+        self.button_area = SectionFrame(self, "Actions")
+        self.button_area.grid(row=4, column=0, sticky="ew", padx=5, pady=(2,5))
+
 if __name__ == "__main__":
     root = tk.Tk()
     root.title("Discovery Service UI")
