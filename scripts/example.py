@@ -28,3 +28,5 @@ def handle_message(msg):
 
     # example just print the message
     print(f"Received message: {msg}")
+    print(f"Discovered ip: {msg.get('ip')}")
+    print(f"Config: {_cfg}")

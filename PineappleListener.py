@@ -377,8 +377,15 @@ if __name__ == '__main__':
             return
         # send to checked plugins
         for name, var in ui.device_vars.items():
-            if var.get():
-                plugin_mgr.handle(name, cmd)
+            if not var.get(): continue
+
+            # grab the last-known IP for this device…
+            ip = disco.device_states[name]['ip']
+
+            # …and merge it into the command dict
+            enriched = dict(cmd, ip=ip)
+
+            plugin_mgr.handle(name, enriched)
 
     disco.subscribe_commands(_dispatch_to_plugins)
 
