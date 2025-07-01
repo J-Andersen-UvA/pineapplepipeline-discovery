@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk
+import tkinter.font as tkfont
 
 def init_style(root):
     """
@@ -13,7 +14,14 @@ def init_style(root):
         style.theme_use(style.theme_names()[0])
     # apply Segoe UI 10 to the common ttk widgets
     for widget in ('TLabel', 'TButton', 'TEntry', 'TSpinbox', 'TCombobox', 'TLabelframe.Label'):
-        style.configure(widget, font=('Segoe UI', 10))
+        style.configure(widget, font=('Segoe UI', 12))
+
+    # Resize all fonts to 12pt
+    # Grab each of the standard named fonts and resize it
+    for fn in ("TkDefaultFont", "TkTextFont", "TkFixedFont", "TkMenuFont", "TkHeadingFont"):
+        f = tkfont.nametofont(fn)
+        f.configure(size=12)
+
     # slightly tweak spacing on frames & buttons if you like:
     style.configure('TButton', padding=(6,4))
     style.configure('TLabelframe', padding=10)

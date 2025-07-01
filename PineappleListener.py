@@ -17,11 +17,7 @@ from PluginManager import PluginManager  # your step-2 script
 MAX_MESSAGE_LENGTH = 100  # max length of messages in the UI
 
 class DiscoveryService:
-    def __init__(
-        self,
-        config_path='config.yaml',
-        zeroconf_type: str = '_mocap._tcp.local.',
-    ):
+    def __init__(self, config_path='config.yaml', zeroconf_type: str = '_mocap._tcp.local.'):
         # 1) Load expected devices
         self.config = self._load_config(config_path)
         self.expected = self.config[0]
@@ -31,17 +27,19 @@ class DiscoveryService:
         }
         self._device_subscribers = []
         self._command_subscribers = []
+        self._health_interval = 2.0
+        self.zeroconf_type = zeroconf_type
 
+    def start(self):
         # 2) DNS-based polling
         self._running = True
         threading.Thread(target=self._dns_poll_loop, daemon=True).start()
 
         # 3) Zeroconf browse + TCP-probe cleanup
         self.zeroconf = Zeroconf()
-        self.zeroconf_type = zeroconf_type
         self._zc_services = {}
         self._zc_browser = ServiceBrowser(
-            self.zeroconf, zeroconf_type, handlers=[self._on_zc_state_change]
+            self.zeroconf, self.zeroconf_type, handlers=[self._on_zc_state_change]
         )
         threading.Thread(target=self._zc_cleanup_loop, daemon=True).start()
 
@@ -54,6 +52,18 @@ class DiscoveryService:
         # 5) WebSocket server for JSON messages
         self._ws_port, self._ws_address = self.server.get('ws_port'), self.server.get('ws_address')
         threading.Thread(target=self._start_ws_server, daemon=True).start()
+
+        # 6) Start health check loop
+        threading.Thread(target=self._health_loop, daemon=True).start()
+
+        # 7) internal health‐response tracking
+        # last time each device replied
+        self._last_health_response = { name: 0.0 for name in self.device_states }
+        # subscribe to our own command bus to catch health_response
+        self.subscribe_commands(self._on_internal_command)
+        # start timeout monitor
+        threading.Thread(target=self._health_timeout_loop, daemon=True).start()
+
 
     def _load_config(self, path):
         if not os.path.exists(path):
@@ -90,11 +100,19 @@ class DiscoveryService:
                     ip = socket.gethostbyname(state['hostname'])
                     if not state['connected'] or state['ip'] != ip:
                         state['connected'], state['ip'] = True, ip
+                        print(f"[DiscoveryService] Device {name} connected at {ip}")
                         self._notify_device(name, ip)
+                        # Notify the UI log
+                        self._notify_command({
+                            'type': 'dns',
+                            'name': name,
+                            'ip': ip
+                        })
                 except socket.gaierror:
                     if state['connected']:
                         state['connected'], state['ip'] = False, None
-                        self._notify_device(name, None)
+                        # self._notify_device(name, None)
+                        print(f"[DiscoveryService] Device {name} disconnected")
             time.sleep(2)
 
     def _on_zc_state_change(self, zeroconf, service_type, name, state_change):
@@ -160,7 +178,6 @@ class DiscoveryService:
             self.zeroconf_type,
             handlers=[self._on_zc_state_change]
         )
-
 
     def rescan_devices(self):
         """
@@ -232,6 +249,53 @@ class DiscoveryService:
             except:
                 pass
 
+    def _health_loop(self):
+        """
+        Every self._health_interval seconds, send a
+        {'type':'health','device':<attached_name>}
+        command for each currently connected device.
+        Plugins will receive this and must reply with
+        a 'health_response' message to clear their status.
+        """
+        while self._running:
+            for name, state in self.device_states.items():
+                if state.get('connected'):
+                    # emit a health‐check command
+                    self._notify_command({
+                        'type':   'health',
+                        'device': name
+                    })
+            time.sleep(self._health_interval)
+
+    def _on_internal_command(self, cmd):
+        # catch only health_response messages
+        if cmd.get('type') == 'health_response':
+            dev = cmd.get('device')
+            # stamp the time they replied
+            if dev in self._last_health_response:
+                self._last_health_response[dev] = time.time()
+
+    def _health_timeout_loop(self):
+        """
+        Run in its own thread: any device that hasn't replied
+        within health_interval seconds gets a one-off health_timeout.
+        """
+        while self._running:
+            now = time.time()
+            for name, state in self.device_states.items():
+                if state['connected']:
+                    last = self._last_health_response.get(name, 0.0)
+                    if now - last > self._health_interval + 0.5:  # allow a small grace period
+                        # they've timed out!
+                        # reset so we only fire once until they reply again
+                        self._last_health_response[name] = now
+                        self._notify_command({
+                            'type':   'health_timeout',
+                            'value': name
+                        })
+            # check twice as often as health requests
+            time.sleep(self._health_interval * 0.5)
+
     def shutdown(self):
         self._running = False
         self.zeroconf.close()
@@ -253,13 +317,22 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         # Configured devices as checkboxes
         self.device_vars = {}
         self.device_buttons = {}
+        self.device_hearts = {}
         for d in service.expected:
             name = d['attached_name']
             var = tk.BooleanVar(value=True)
-            cb = tk.Checkbutton(
-                self.configured_devices, text=name,
-                variable=var, anchor='w', fg='red'
-            )
+
+            row = ttk.Frame(self.configured_devices)
+            row.pack(fill=tk.X, padx=5, pady=2)
+
+            # Checkbox for device
+            cb = tk.Checkbutton(row, text=name, variable=var, anchor='w', fg='red')
+
+            # heart icon, default gray
+            heart = ttk.Label(row, text="💚")
+            heart.pack(side=tk.LEFT, padx=(0,5))
+            self.device_hearts[name] = heart
+
             cb.pack(fill=tk.X, padx=5, pady=2)
             self.device_vars[name] = var
             self.device_buttons[name] = cb
@@ -297,20 +370,37 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
 
     def _on_device_event(self, name, ip):
         cb = self.device_buttons.get(name)
-        if cb:
-            color = 'green' if ip else 'red'
-            self.after(0, lambda: cb.config(fg=color))
+        # if not cb:
+        #     return
+
+        # Decide color and text
+        if ip:
+            display = f"{name} ({ip})"
+            color   = 'green'
+        else:
+            display = name
+            color   = 'red'
+
+        # Since we're in a callback thread, marshal back to the UI thread
+        def _update():
+            cb.config(text=display, fg=color)
+
+        self.after(0, _update)
 
     def _on_command_event(self, cmd):
         ctype = cmd.get('type')
         # prefer 'value' if it exists, otherwise fall back to 'name'
         disp = cmd.get('value') or cmd.get('name') or '<unknown>'
+        check_health = ctype == "health_response" and not cmd.get('value')
+        name  = cmd.get('device') or cmd.get('name')
 
         # Log in Last Messages
-        self.after(0, lambda: self.msg_list.insert(
-            tk.END,
-            f"{time.strftime('%H:%M:%S')} – {ctype}: {disp}"
-        ))
+        if check_health or ctype not in ("health_response"):
+            disp = f"{disp} (unhealthy)"
+            self.after(0, lambda: self.msg_list.insert(
+                tk.END,
+                f"{time.strftime('%H:%M:%S')} – {ctype}: {disp}"
+            ))
         # Update status label
         self.after(0, lambda: self.status_label.config(
             text=f"Last: {ctype} – {disp}"
@@ -338,6 +428,36 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
             if cb:
                 self.after(0, cb.destroy)
             self.zc_vars.pop(disp, None)
+        
+        elif ctype == 'health_response':
+            dev = cmd['device']
+            ok  = cmd.get('value', False)
+            heart = self.device_hearts.get(dev)
+            if heart:
+                color = 'green' if ok else 'red'
+                self.after(0, lambda c=color, h=heart: h.config(foreground=c))
+
+        elif ctype == "health":
+            # only animate if that device is checked
+            if self.device_vars.get(name, False).get():
+                self._beat_heart(name)
+            # we don’t need to log health‐checks themselves, so return
+            return
+
+
+    def _beat_heart(self, name):
+        """
+        Swap the heart to 💓, then back to 💚 after 200ms.
+        """
+        heart = self.device_hearts.get(name)
+        if not heart:
+            return
+
+        # show beating heart
+        heart.config(text='💓')
+        # then after a short delay, restore the normal heart
+        self.after(200, lambda: heart.config(text='💚'))
+
 
     def _show_ip(self):
         checked = [n for n, var in self.device_vars.items() if var.get()]
@@ -374,14 +494,15 @@ if __name__ == '__main__':
     root.minsize(600, 600)     # minimum width=600px, height=400px
     root.title("Pineapple Listener UI")
 
-    print("Starting Discovery Service...")
+    print("Initializing Discovery Service...")
     disco = DiscoveryService('config.yaml')
-    print("Discovery Service started.")
 
     print("Initializing UI...")
     ui = StyledDiscoveryUI(root, disco)
     ui.pack(fill=tk.BOTH, expand=True)
     print("UI initialized.")
+    disco.start()  # start the discovery service
+    print("Discovery Service started.")
 
     # Load plugins (scripts) and prepare dispatch
     plugin_mgr = PluginManager(disco.expected, disco._notify_command)
