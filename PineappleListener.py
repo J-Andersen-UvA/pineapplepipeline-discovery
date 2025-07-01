@@ -196,6 +196,8 @@ class DiscoveryService:
             except socket.gaierror:
                 state['connected'], state['ip'] = False, None
             self._notify_device(name, state['ip'])
+        
+        print("[DiscoveryService] DNS rescan complete.")
 
     def _make_handler(self):
         parent = self
@@ -492,17 +494,24 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         messagebox.showinfo("Device IPs", info)
 
     def _on_rescan(self):
+        print("[StyledDiscoveryUI] Rescanning devices and Zeroconf services…")
         # clear Zeroconf checkboxes
         for cb in self.zc_buttons.values():
             cb.destroy()
+        print("[StyledDiscoveryUI] Clearing Zeroconf checkboxes…")
         self.zc_vars.clear()
         self.zc_buttons.clear()
+        print("[StyledDiscoveryUI] Clearing device checkboxes…")
         # clear messages & status
         self.msg_list.delete(0, tk.END)
         self.status_label.config(text="Status: Rescanning…")
         # do rescans
+        print("[StyledDiscoveryUI] Rescanning Zeroconf services and devices…")
         self.service.rescan_zeroconf()
-        self.service.rescan_devices()
+        print("[StyledDiscoveryUI] Rescanning devices via DNS…")
+        threading.Thread(target=self.service.rescan_devices, daemon=True).start()
+        # self.service.rescan_devices()
+        # print("[StyledDiscoveryUI] Rescan complete.")
 
     def _on_close(self):
         self.service.shutdown()
