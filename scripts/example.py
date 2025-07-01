@@ -30,3 +30,10 @@ def handle_message(msg):
     print(f"Received message: {msg}")
     print(f"Discovered ip: {msg.get('ip')}")
     print(f"Config: {_cfg}")
+    if msg.get('type') == 'health':
+        _send({
+            'type':   'health_response',
+            'device': _cfg['attached_name'],
+            'value':     False
+        })
+        return

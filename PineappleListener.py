@@ -17,11 +17,7 @@ from PluginManager import PluginManager  # your step-2 script
 MAX_MESSAGE_LENGTH = 100  # max length of messages in the UI
 
 class DiscoveryService:
-    def __init__(
-        self,
-        config_path='config.yaml',
-        zeroconf_type: str = '_mocap._tcp.local.',
-    ):
+    def __init__(self, config_path='config.yaml', zeroconf_type: str = '_mocap._tcp.local.'):
         # 1) Load expected devices
         self.config = self._load_config(config_path)
         self.expected = self.config[0]
@@ -31,6 +27,7 @@ class DiscoveryService:
         }
         self._device_subscribers = []
         self._command_subscribers = []
+        self._health_interval = 2.0
 
         # 2) DNS-based polling
         self._running = True
@@ -54,6 +51,9 @@ class DiscoveryService:
         # 5) WebSocket server for JSON messages
         self._ws_port, self._ws_address = self.server.get('ws_port'), self.server.get('ws_address')
         threading.Thread(target=self._start_ws_server, daemon=True).start()
+
+        # 6) Start health check loop
+        threading.Thread(target=self._health_loop, daemon=True).start()
 
     def _load_config(self, path):
         if not os.path.exists(path):
@@ -232,6 +232,25 @@ class DiscoveryService:
             except:
                 pass
 
+    def _health_loop(self):
+        """
+        Every self._health_interval seconds, send a
+        {'type':'health','device':<attached_name>}
+        command for each currently connected device.
+        Plugins will receive this and must reply with
+        a 'health_response' message to clear their status.
+        """
+        while self._running:
+            for name, state in self.device_states.items():
+                if state.get('connected'):
+                    # emit a health‐check command
+                    self._notify_command({
+                        'type':   'health',
+                        'device': name
+                    })
+            time.sleep(self._health_interval)
+
+
     def shutdown(self):
         self._running = False
         self.zeroconf.close()
@@ -253,13 +272,22 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         # Configured devices as checkboxes
         self.device_vars = {}
         self.device_buttons = {}
+        self.device_hearts = {}
         for d in service.expected:
             name = d['attached_name']
             var = tk.BooleanVar(value=True)
-            cb = tk.Checkbutton(
-                self.configured_devices, text=name,
-                variable=var, anchor='w', fg='red'
-            )
+
+            row = ttk.Frame(self.configured_devices)
+            row.pack(fill=tk.X, padx=5, pady=2)
+
+            # Checkbox for device
+            cb = tk.Checkbutton(row, text=name, variable=var, anchor='w', fg='red')
+
+            # heart icon, default gray
+            heart = ttk.Label(row, text="💚")
+            heart.pack(side=tk.LEFT, padx=(0,5))
+            self.device_hearts[name] = heart
+
             cb.pack(fill=tk.X, padx=5, pady=2)
             self.device_vars[name] = var
             self.device_buttons[name] = cb
@@ -338,6 +366,14 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
             if cb:
                 self.after(0, cb.destroy)
             self.zc_vars.pop(disp, None)
+        
+        elif ctype == 'health_response':
+            dev = cmd['device']
+            ok  = cmd.get('value', False)
+            heart = self.device_hearts.get(dev)
+            if heart:
+                color = 'green' if ok else 'red'
+                self.after(0, lambda c=color, h=heart: h.config(foreground=c))
 
     def _show_ip(self):
         checked = [n for n, var in self.device_vars.items() if var.get()]
