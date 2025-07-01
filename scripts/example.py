@@ -27,13 +27,13 @@ def handle_message(msg):
     # _send({'type':'status','msg':f"sent {msg['action']} to phone"})
 
     # example just print the message
-    print(f"Received message: {msg}")
-    print(f"Discovered ip: {msg.get('ip')}")
-    print(f"Config: {_cfg}")
-    if msg.get('type') == 'health':
+    # print(f"Received message: {msg}")
+    # print(f"Discovered ip: {msg.get('ip')}")
+    # print(f"Config: {_cfg}")
+    if msg.get('type') == 'health' and msg.get('ip') is not None:
         _send({
             'type':   'health_response',
             'device': _cfg['attached_name'],
-            'value':     False
+            'value':     True
         })
         return
