@@ -22,7 +22,7 @@ class DiscoveryService:
         self.config = self._load_config(config_path)
         self.expected = self.config[0]
         self.device_states = {
-            d['attached_name']: {'hostname': d['hostname'], 'ip': None, 'connected': False}
+            d['attached_name']: {'hostname': d['hostname'], 'ip': None, 'connected': False, 'checked': d.get('checked', False)}
             for d in self.expected
         }
         self._device_subscribers = []
@@ -92,6 +92,11 @@ class DiscoveryService:
             try: cb(cmd)
             except:
                 print(f"[DiscoveryService] Command handler failed: {cb} – {cmd}")
+
+    def set_device_filter(self, fn):
+        """fn(name:str) -> bool; only True devices get health checks."""
+        for name, state in self.device_states.items():
+            state['checked'] = fn(name)
 
     def _dns_poll_loop(self):
         while self._running:
@@ -259,7 +264,7 @@ class DiscoveryService:
         """
         while self._running:
             for name, state in self.device_states.items():
-                if state.get('connected'):
+                if state.get('connected') and state.get('checked', True):
                     # emit a health‐check command
                     self._notify_command({
                         'type':   'health',
@@ -283,7 +288,7 @@ class DiscoveryService:
         while self._running:
             now = time.time()
             for name, state in self.device_states.items():
-                if state['connected']:
+                if state['connected'] and state.get('checked', True):
                     last = self._last_health_response.get(name, 0.0)
                     if now - last > self._health_interval + 0.5:  # allow a small grace period
                         # they've timed out!
@@ -326,10 +331,10 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
             row.pack(fill=tk.X, padx=5, pady=2)
 
             # Checkbox for device
-            cb = tk.Checkbutton(row, text=name, variable=var, anchor='w', fg='red')
+            cb = tk.Checkbutton(row, text=name, variable=var, anchor='w', fg='red', command=lambda n=name: self._on_check_toggle(n))
 
             # heart icon, default gray
-            heart = ttk.Label(row, text="💚")
+            heart = ttk.Label(row, text="💚", foreground='gray')
             heart.pack(side=tk.LEFT, padx=(0,5))
             self.device_hearts[name] = heart
 
@@ -444,13 +449,29 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
             # we don’t need to log health‐checks themselves, so return
             return
 
+    def _on_check_toggle(self, toggled_name):
+        """
+        Re-install the device_filter on the DiscoveryService so that
+        health checks only go to checked devices.
+        """
+        # build a predicate that returns True only for currently checked names
+        predicate = lambda dev_name: self.device_vars[dev_name].get()
+        self.service.set_device_filter(predicate)
+
+        # reset the heart icon to gray if they just turned it off
+        if toggled_name is not None and not self.device_vars[toggled_name].get():
+            heart = self.device_hearts.get(toggled_name)
+            if heart:
+                # 🖤 or gray 💚 for “inactive”
+                heart.config(text='💚', foreground='gray')
 
     def _beat_heart(self, name):
         """
         Swap the heart to 💓, then back to 💚 after 200ms.
         """
         heart = self.device_hearts.get(name)
-        if not heart:
+        # if no heart or device is unchecked, do nothing
+        if not heart or not self.device_vars.get(name, False).get():
             return
 
         # show beating heart
@@ -500,6 +521,7 @@ if __name__ == '__main__':
     print("Initializing UI...")
     ui = StyledDiscoveryUI(root, disco)
     ui.pack(fill=tk.BOTH, expand=True)
+    ui._on_check_toggle(None)
     print("UI initialized.")
     disco.start()  # start the discovery service
     print("Discovery Service started.")
