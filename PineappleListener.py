@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from zeroconf import Zeroconf, ServiceBrowser, ServiceStateChange
+from listen_server import ListenServer  # your step-1 script
 import websockets
 
 import tkinterStyle as tkstyle
@@ -19,10 +20,13 @@ MAX_MESSAGE_LENGTH = 100  # max length of messages in the UI
 class DiscoveryService:
     def __init__(self, config_path='config.yaml', zeroconf_type: str = '_mocap._tcp.local.'):
         # 1) Load expected devices
-        self.config = self._load_config(config_path)
-        self.expected = self.config[0]
+        devices, server, listen_conf = self._load_config(config_path)
+        self.expected = devices
+        self.server = server
+        self.listen_conf = listen_conf
+
         self.device_states = {
-            d['attached_name']: {'hostname': d['hostname'], 'ip': None, 'connected': False, 'checked': d.get('checked', False)}
+            d['attached_name']: {'hostname': d['hostname'], 'ip': None, 'resolved': False, 'reachable': False, 'checked': d.get('checked', False)}
             for d in self.expected
         }
         self._device_subscribers = []
@@ -44,7 +48,6 @@ class DiscoveryService:
         threading.Thread(target=self._zc_cleanup_loop, daemon=True).start()
 
         # 4) HTTP endpoint for JSON POSTs
-        self.server = self.config[1]
         http_address, http_port = self.server.get('http_addr'), self.server.get('http_port')
         self._http_server = HTTPServer((http_address, http_port), self._make_handler())
         threading.Thread(target=self._http_server.serve_forever, daemon=True).start()
@@ -70,7 +73,7 @@ class DiscoveryService:
             raise FileNotFoundError(f"Config file not found: {path}")
         with open(path) as f:
             data = yaml.safe_load(f)
-        return (data.get('devices', []), data.get('server', None))
+        return (data.get('devices', []), data.get('server', None), data.get('listen_server', {}))
 
     def subscribe_devices(self, cb):
         self._device_subscribers.append(cb)
@@ -103,8 +106,11 @@ class DiscoveryService:
             for name, state in self.device_states.items():
                 try:
                     ip = socket.gethostbyname(state['hostname'])
-                    if not state['connected'] or state['ip'] != ip:
-                        state['connected'], state['ip'] = True, ip
+                    # first time resolution or IP changed?
+                    if not state['resolved'] or state['ip'] != ip:
+                        state['resolved'], state['ip'] = True, ip
+                        # reset reachability when it reappears
+                        state['reachable'] = False
                         print(f"[DiscoveryService] Device {name} connected at {ip}")
                         self._notify_device(name, ip)
                         # Notify the UI log
@@ -114,10 +120,18 @@ class DiscoveryService:
                             'ip': ip
                         })
                 except socket.gaierror:
-                    if state['connected']:
-                        state['connected'], state['ip'] = False, None
+                    # only fire once when we lose resolution
+                    if state['resolved']:
+                        state['resolved'] = False
                         # self._notify_device(name, None)
-                        print(f"[DiscoveryService] Device {name} disconnected")
+                        print(f"[DiscoveryService] Device {name} disconnected, ip cached")
+                        self._notify_device(name, None)
+                        # Notify the UI log
+                        self._notify_command({
+                            'type': 'dns',
+                            'name': name,
+                            'ip': ip if state['ip'] else None
+                        })
             time.sleep(2)
 
     def _on_zc_state_change(self, zeroconf, service_type, name, state_change):
@@ -237,7 +251,7 @@ class DiscoveryService:
         """
         while self._running:
             for name, state in self.device_states.items():
-                if state.get('connected') and state.get('checked', True):
+                if state.get('ip') and state.get('checked', True):
                     # emit a health‐check command
                     self._notify_command({
                         'type':   'health',
@@ -249,8 +263,9 @@ class DiscoveryService:
         # catch only health_response messages
         if cmd.get('type') == 'health_response':
             dev = cmd.get('device')
-            # stamp the time they replied
-            if dev in self._last_health_response:
+            state = self.device_states.get(dev)
+            if state:
+                state['reachable'] = bool(cmd.get('value', False))
                 self._last_health_response[dev] = time.time()
 
     def _health_timeout_loop(self):
@@ -261,16 +276,19 @@ class DiscoveryService:
         while self._running:
             now = time.time()
             for name, state in self.device_states.items():
-                if state['connected'] and state.get('checked', True):
+                if state['resolved'] and state.get('checked', True):
                     last = self._last_health_response.get(name, 0.0)
                     if now - last > self._health_interval + 0.5:  # allow a small grace period
                         # they've timed out!
+                        state['reachable'] = False
                         # reset so we only fire once until they reply again
                         self._last_health_response[name] = now
                         self._notify_command({
                             'type':   'health_timeout',
                             'value': name
                         })
+                    else:
+                        state['reachable'] = True
             # check twice as often as health requests
             time.sleep(self._health_interval * 0.5)
 
@@ -288,7 +306,7 @@ class DiscoveryService:
 
         # 2) Tell the UI every configured device is now down
         for name, state in self.device_states.items():
-            state['connected'] = False
+            state['resolved'] = False
             state['ip']        = None
             self._notify_device(name, None)
 
@@ -341,6 +359,14 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         self.healthy = ""
         self.status = "Idle"
 
+        # === instantiate the listener ===
+        lc = self.service.listen_conf or {}
+        module      = lc.get("module")
+        entrypt     = lc.get("entrypoint", "receive_messages")
+        uri         = lc.get("uri", {})
+        uri_listener = f"ws://{self.service.server.get('ws_address', 'localhost')}:{self.service.server.get('ws_port', 8765)}"
+        self._listen = ListenServer(module, entrypt, uri, uri_listener)
+
         # Clear placeholders in styled frames
         for frame in (self.configured_devices, self.zeroconf):
             for child in frame.winfo_children():
@@ -392,8 +418,8 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         # Button area
         frame = ttk.Frame(self.button_area)
         frame.pack(pady=5)
-        ttk.Button(frame, text="Show IP", command=self._show_ip)\
-            .pack(side=tk.LEFT, padx=(0,10))
+        self.listen_button = ttk.Button(frame, text="Start Listen", command=self._on_listen_toggle)
+        self.listen_button.pack(side=tk.LEFT, padx=(0,10))
         ttk.Button(frame, text="Restart", command=self._on_restart)\
             .pack(side=tk.LEFT)
 
@@ -404,17 +430,20 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         # Force initial DNS update
         # self.service.rescan_devices()
 
-    def _on_device_event(self, name, ip):
+    def _on_device_event(self, name, _):
         cb = self.device_buttons.get(name)
-        # if not cb:
-        #     return
+        state = self.service.device_states[name]
 
-        # Decide color and text
-        if ip:
-            display = f"{name} ({ip})"
+
+        # Decide color
+        if state['resolved']:
+            display = f"{name} ({state['ip']})"
             color   = 'black'
+        elif state['ip']:
+            display = f"{name} (cached: {state['ip']})"
+            color   = 'gray60'
         else:
-            display = name
+            display = f"{name}"
             color   = 'gray80'
 
         # Since we're in a callback thread, marshal back to the UI thread
@@ -423,7 +452,7 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
 
             # whenever we lose IP, reset the heart to neutral gray
             heart = self.device_hearts.get(name)
-            if heart and not ip:
+            if heart and not state['ip']:
                 heart.config(text='💚', foreground='gray')
 
         self.after(0, _update)
@@ -527,17 +556,16 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         # then after a short delay, restore the normal heart
         self.after(200, lambda: heart.config(text='💚'))
 
-
-    def _show_ip(self):
-        checked = [n for n, var in self.device_vars.items() if var.get()]
-        if not checked:
-            messagebox.showinfo("Show IP", "No device selected.")
-            return
-        info = "\n".join(
-            f"{n}: {self.service.device_states[n].get('ip') or '<not connected>'}"
-            for n in checked
-        )
-        messagebox.showinfo("Device IPs", info)
+    def _on_listen_toggle(self):
+        ts = time.strftime('%H:%M:%S')
+        if self._listen.start():
+            self.msg_list.insert(tk.END, f"{ts} – Listening server started")
+            self.listen_button.config(text="Stop Listen")
+        else:
+            self._listen.stop()
+            self.msg_list.insert(tk.END, f"{ts} – Listening server stopped")
+            self.listen_button.config(text="Start Listen")
+        self.msg_list.see(tk.END)
 
     def _on_restart(self):
         """Completely restart DNS, Zeroconf, HTTP & WS servers."""
