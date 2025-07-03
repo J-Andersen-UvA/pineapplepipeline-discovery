@@ -375,13 +375,17 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         self.msg_list = tk.Listbox(self.last_messages, height=6)
         self.msg_list.pack(fill=tk.X, padx=5, pady=5)
 
-        # Current status area
+        # Current status area, a status text label and a current name label
         btn_frame = ttk.Frame(self.current_status)
         btn_frame.pack(pady=5)
         self.status_label = ttk.Label(
-            self.current_status, text="Status: Idle"
+            self.current_status, text=f"Status:\tIdle"
         )
         self.status_label.pack(pady=(5,0))
+        self.current_name_label = ttk.Label(
+            self.current_status, text="Name:\tNone"
+        )
+        self.current_name_label.pack(pady=(0,5))
 
         # Button area
         frame = ttk.Frame(self.button_area)
@@ -426,20 +430,28 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         ctype = cmd.get('type')
         # prefer 'value' if it exists, otherwise fall back to 'name'
         disp = cmd.get('value') or cmd.get('name') or '<unknown>'
-        check_health = ctype == "health_response" and not cmd.get('value')
+        check_health = ctype == "health_response" and not cmd.get('value') or ctype == "health_timeout"
         name  = cmd.get('device') or cmd.get('name')
 
         # Log in Last Messages
-        if check_health or ctype not in ("health_response"):
+        if check_health:
             disp = f"{disp} (unhealthy)"
             self.after(0, lambda: self.msg_list.insert(
                 tk.END,
                 f"{time.strftime('%H:%M:%S')} – {ctype}: {disp}"
             ))
-        # Update status label
-        self.after(0, lambda: self.status_label.config(
-            text=f"Last: {ctype} – {disp}"
-        ))
+        # Update status area, based on type
+        if ctype == 'recordStart':
+            self.status_label.config(text=f"Status:\tRecording")
+        elif ctype == 'recordStop':
+            self.status_label.config(text=f"Status:\tIdle")
+        elif ctype == 'fileName':
+            self.current_name_label.config(text=f"Name:\t{disp}")
+            # also log the file name
+            self.msg_list.insert(tk.END, f"{time.strftime('%H:%M:%S')} – File: {disp}")
+        # self.after(0, lambda: self.status_label.config(
+        #     text=f"Last: {ctype} – {disp}"
+        # ))
         # Scroll to bottom
         self.after(0, lambda: self.msg_list.see(tk.END))
 
