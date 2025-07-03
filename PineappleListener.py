@@ -170,33 +170,6 @@ class DiscoveryService:
                     )
             time.sleep(2)
 
-    def rescan_zeroconf(self):
-        """Restart the Zeroconf browser to trigger fresh Add events."""
-        try: self._zc_browser.cancel()
-        except: pass
-        try: self.zeroconf.close()
-        except: pass
-        self._zc_services.clear()
-        self.zeroconf = Zeroconf()
-        self._zc_browser = ServiceBrowser(
-            self.zeroconf,
-            self.zeroconf_type,
-            handlers=[self._on_zc_state_change]
-        )
-
-    def rescan_devices(self):
-        """
-        Immediately re-poll all configured hostnames via DNS
-        and fire device-up/down events.
-        """
-        for name, state in self.device_states.items():
-            try:
-                ip = socket.gethostbyname(state['hostname'])
-                state['connected'], state['ip'] = True, ip
-            except socket.gaierror:
-                state['connected'], state['ip'] = False, None
-            self._notify_device(name, state['ip'])
-
     def _make_handler(self):
         parent = self
         class Handler(BaseHTTPRequestHandler):
@@ -301,11 +274,63 @@ class DiscoveryService:
             # check twice as often as health requests
             time.sleep(self._health_interval * 0.5)
 
+    def restart(self):
+        """
+        Fully restart DNS polling, Zeroconf browsing,
+        HTTP & WebSocket servers—and clear all old UI state.
+        """
+        print("[DiscoveryService] Restarting…")
+
+        # 1) Tell the UI every Zeroconf service is gone
+        for svc_name in list(self._zc_services.keys()):
+            self._notify_command({'type': 'zeroconf_removed', 'name': svc_name})
+        self._zc_services.clear()
+
+        # 2) Tell the UI every configured device is now down
+        for name, state in self.device_states.items():
+            state['connected'] = False
+            state['ip']        = None
+            self._notify_device(name, None)
+
+        # 3) Reset health‐response timers so we’ll re‐timeout properly
+        self._last_health_response = {name: 0.0 for name in self.device_states}
+
+        # 4) Tear everything down
+        self.shutdown()
+        time.sleep(0.2)  # give sockets & threads a moment to unwind
+
+        # 5) Bring it all back up
+        self.start()
+        print("[DiscoveryService] Restart complete.")
+
     def shutdown(self):
         self._running = False
-        self.zeroconf.close()
-        self._http_server.shutdown()
-        self._http_server.server_close()
+
+        # Zeroconf
+        try:
+            self.zeroconf.close()
+        except:
+            pass
+
+        # HTTP server
+        try:
+            self._http_server.shutdown()
+            self._http_server.server_close()
+        except:
+            pass
+
+        # WebSocket server
+        try:
+            # close the server sockets
+            self._ws_server.close()
+        except:
+            pass
+
+        try:
+            # tell the asyncio loop to stop
+            self._ws_loop.call_soon_threadsafe(self._ws_loop.stop)
+        except:
+            pass
 
 
 class StyledDiscoveryUI(tkstyle.DiscoveryUI):
@@ -363,7 +388,7 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         frame.pack(pady=5)
         ttk.Button(frame, text="Show IP", command=self._show_ip)\
             .pack(side=tk.LEFT, padx=(0,10))
-        ttk.Button(frame, text="Rescan", command=self._on_rescan)\
+        ttk.Button(frame, text="Restart", command=self._on_restart)\
             .pack(side=tk.LEFT)
 
         # Subscribe to device + command events
@@ -389,6 +414,11 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         # Since we're in a callback thread, marshal back to the UI thread
         def _update():
             cb.config(text=display, fg=color)
+
+            # whenever we lose IP, reset the heart to neutral gray
+            heart = self.device_hearts.get(name)
+            if heart and not ip:
+                heart.config(text='💚', foreground='gray')
 
         self.after(0, _update)
 
@@ -491,18 +521,11 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         )
         messagebox.showinfo("Device IPs", info)
 
-    def _on_rescan(self):
-        # clear Zeroconf checkboxes
-        for cb in self.zc_buttons.values():
-            cb.destroy()
-        self.zc_vars.clear()
-        self.zc_buttons.clear()
-        # clear messages & status
-        self.msg_list.delete(0, tk.END)
-        self.status_label.config(text="Status: Rescanning…")
-        # do rescans
-        self.service.rescan_zeroconf()
-        self.service.rescan_devices()
+    def _on_restart(self):
+        """Completely restart DNS, Zeroconf, HTTP & WS servers."""
+        self.msg_list.insert(tk.END, f"{time.strftime('%H:%M:%S')} – Restarting Discovery…")
+        self.msg_list.see(tk.END)
+        self.service.restart()
 
     def _on_close(self):
         self.service.shutdown()
