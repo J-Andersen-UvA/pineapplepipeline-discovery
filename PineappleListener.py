@@ -338,6 +338,8 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         super().__init__(master)
         self.service = service
         master.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.healthy = ""
+        self.status = "Idle"
 
         # Clear placeholders in styled frames
         for frame in (self.configured_devices, self.zeroconf):
@@ -379,7 +381,7 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         btn_frame = ttk.Frame(self.current_status)
         btn_frame.pack(pady=5)
         self.status_label = ttk.Label(
-            self.current_status, text=f"Status:\tIdle"
+            self.current_status, text=f"Status:\t{self.status} {self.healthy}",
         )
         self.status_label.pack(pady=(5,0))
         self.current_name_label = ttk.Label(
@@ -440,18 +442,22 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
                 tk.END,
                 f"{time.strftime('%H:%M:%S')} – {ctype}: {disp}"
             ))
+            self.healthy = "unhealthy"
+        elif ctype == "health_response" and cmd.get('value'):
+            self.healthy = ""
+        
         # Update status area, based on type
         if ctype == 'recordStart':
-            self.status_label.config(text=f"Status:\tRecording")
+            self.status = "Recording"
         elif ctype == 'recordStop':
-            self.status_label.config(text=f"Status:\tIdle")
+            self.status = "Idle"
         elif ctype == 'fileName':
             self.current_name_label.config(text=f"Name:\t{disp}")
             # also log the file name
             self.msg_list.insert(tk.END, f"{time.strftime('%H:%M:%S')} – File: {disp}")
-        # self.after(0, lambda: self.status_label.config(
-        #     text=f"Last: {ctype} – {disp}"
-        # ))
+
+        # Update the status label
+        self.status_label.config(text=f"Status:\t{self.status} {self.healthy}")
         # Scroll to bottom
         self.after(0, lambda: self.msg_list.see(tk.END))
 
