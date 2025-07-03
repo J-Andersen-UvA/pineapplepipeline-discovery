@@ -276,14 +276,32 @@ class DiscoveryService:
 
     def restart(self):
         """
-        Restart the DiscoveryService by shutting it down and starting it again.
-        This will reinitialize Zeroconf, DNS polling, and the HTTP/WebSocket servers.
+        Fully restart DNS polling, Zeroconf browsing,
+        HTTP & WebSocket servers—and clear all old UI state.
         """
-        print("[StyledDiscoveryUI] Restarting Discovery Service…")
+        print("[DiscoveryService] Restarting…")
+
+        # 1) Tell the UI every Zeroconf service is gone
+        for svc_name in list(self._zc_services.keys()):
+            self._notify_command({'type': 'zeroconf_removed', 'name': svc_name})
+        self._zc_services.clear()
+
+        # 2) Tell the UI every configured device is now down
+        for name, state in self.device_states.items():
+            state['connected'] = False
+            state['ip']        = None
+            self._notify_device(name, None)
+
+        # 3) Reset health‐response timers so we’ll re‐timeout properly
+        self._last_health_response = {name: 0.0 for name in self.device_states}
+
+        # 4) Tear everything down
         self.shutdown()
-        time.sleep(0.2)      # give sockets a moment to close
+        time.sleep(0.2)  # give sockets & threads a moment to unwind
+
+        # 5) Bring it all back up
         self.start()
-        print("[StyledDiscoveryUI] Discovery Service restarted.")
+        print("[DiscoveryService] Restart complete.")
 
     def shutdown(self):
         self._running = False
@@ -396,6 +414,11 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         # Since we're in a callback thread, marshal back to the UI thread
         def _update():
             cb.config(text=display, fg=color)
+
+            # whenever we lose IP, reset the heart to neutral gray
+            heart = self.device_hearts.get(name)
+            if heart and not ip:
+                heart.config(text='💚', foreground='gray')
 
         self.after(0, _update)
 
