@@ -358,7 +358,7 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
             row.pack(fill=tk.X, padx=5, pady=2)
 
             # Checkbox for device
-            cb = tk.Checkbutton(row, text=name, variable=var, anchor='w', fg='red', command=lambda n=name: self._on_check_toggle(n))
+            cb = tk.Checkbutton(row, text=name, variable=var, anchor='w', fg='gray80', command=lambda n=name: self._on_check_toggle(n))
 
             # heart icon, default gray
             heart = ttk.Label(row, text="💚", foreground='gray')
@@ -412,10 +412,10 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         # Decide color and text
         if ip:
             display = f"{name} ({ip})"
-            color   = 'green'
+            color   = 'black'
         else:
             display = name
-            color   = 'red'
+            color   = 'gray80'
 
         # Since we're in a callback thread, marshal back to the UI thread
         def _update():
