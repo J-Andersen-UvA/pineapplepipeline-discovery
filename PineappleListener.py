@@ -139,11 +139,13 @@ class DiscoveryService:
         if state_change in (ServiceStateChange.Added, ServiceStateChange.Updated):
             info = zeroconf.get_service_info(service_type, name)
             if not info: return
+
             addrs = [
                 socket.inet_ntoa(r) if len(r)==4
                 else socket.inet_ntop(socket.AF_INET6, r)
                 for r in info.addresses
             ]
+            print(f"[DiscoveryService] Adding Zeroconf service: {name} @ {addrs}:{info.port}")
             cmd = {
                 'type': 'zeroconf',
                 'name': name,
@@ -153,7 +155,14 @@ class DiscoveryService:
                     k.decode(): v.decode() for k, v in info.properties.items()
                 }
             }
+            name = self._check_zc_in_devices(name)
+            if name:
+                self.device_states[name]['ip']   = addrs[0]
+                self.device_states[name]['port'] = info.port
+                self.device_states[name]['resolved'] = True
+
             self._zc_services[name] = cmd
+            self._zc_service_to_device(cmd)
             self._notify_command(cmd)
 
         elif state_change is ServiceStateChange.Removed:
@@ -183,6 +192,38 @@ class DiscoveryService:
                         self.zeroconf, self.zeroconf_type, name, ServiceStateChange.Removed
                     )
             time.sleep(2)
+
+    def _check_zc_in_devices(self, name):
+        """
+        Check if a Zeroconf service name matches any of the expected devices.
+        Returns the device name if found, otherwise None.
+        """
+        for device in self.expected:
+            if device['attached_name'] == name or name.startswith(device['attached_name']):
+                return device['attached_name']
+        return None
+    
+    def _zc_service_to_device(self, cmd):
+        """
+        Convert a Zeroconf service command to a device state.
+        Returns the device name if it matches an expected device, otherwise None.
+        """
+        name = cmd.get('name')
+        if not name:
+            print("[DiscoveryService] Zeroconf command has no name, skipping")
+            return None
+        dev_name = self._check_zc_in_devices(name)
+        if dev_name:
+            # update the device state with Zeroconf info
+            state = self.device_states[dev_name]
+            state['ip'] = cmd.get('addresses', [None])[0]
+            state['port'] = cmd.get('port')
+            print(f"[DiscoveryService] Device '{dev_name}' updated with Zeroconf info: {state}")
+            state['resolved'] = True
+            state['checked'] = True
+            self._notify_device(dev_name, f"{state['ip']}:{state['port']}")
+        else:
+            print(f"[DiscoveryService] Zeroconf service '{name}' does not match any expected device")
 
     def _make_handler(self):
         parent = self
@@ -364,7 +405,7 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         module      = lc.get("module")
         entrypt     = lc.get("entrypoint", "receive_messages")
         uri         = lc.get("uri", {})
-        uri_listener = f"ws://{self.service.server.get('ws_address', 'localhost')}:{self.service.server.get('ws_port', 8765)}"
+        uri_listener = f"ws://{self.service.server.get('ws_address', 'localhost')}:{self.service.server.get('ws_port', 8766)}"
         self._listen = ListenServer(module, entrypt, uri, uri_listener)
 
         # Clear placeholders in styled frames
@@ -430,17 +471,19 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         # Force initial DNS update
         # self.service.rescan_devices()
 
-    def _on_device_event(self, name, _):
+    def _on_device_event(self, name, ip_and_port):
         cb = self.device_buttons.get(name)
         state = self.service.device_states[name]
-
+        if ip_and_port:
+            state['ip'] = ip_and_port.split(':')[0]
+            state['port'] = ip_and_port.split(':')[1] if ':' in ip_and_port else "None"
 
         # Decide color
         if state['resolved']:
-            display = f"{name} ({state['ip']})"
+            display = f"{name} ({state['ip']}:{state['port']})"
             color   = 'black'
         elif state['ip']:
-            display = f"{name} (cached: {state['ip']})"
+            display = f"{name} (cached: {state['ip']}:{state['port']})"
             color   = 'gray60'
         else:
             display = f"{name}"
@@ -460,9 +503,9 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
     def _on_command_event(self, cmd):
         ctype = cmd.get('type')
         # prefer 'value' if it exists, otherwise fall back to 'name'
-        disp = cmd.get('value') or cmd.get('name') or '<unknown>'
+        disp = cmd.get('value') or f"{cmd.get('name')}:{cmd.get('port')}" or '<unknown>'
         check_health = ctype == "health_response" and not cmd.get('value') or ctype == "health_timeout"
-        name  = cmd.get('device') or cmd.get('name')
+        name  = cmd.get('device') or f"{cmd.get('name')}:{cmd.get('port')}" or '<unknown>'
 
         # Log in Last Messages
         if check_health:
@@ -495,21 +538,22 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
             self.after(0, lambda: self.msg_list.delete(0))
 
         # Manage Zeroconf checkboxes
-        if ctype == 'zeroconf' and disp not in self.zc_vars:
-            var = tk.BooleanVar(value=True)
-            cb = tk.Checkbutton(
-                self.zeroconf, text=disp,
-                variable=var, anchor='w'
-            )
-            cb.pack(fill=tk.X, padx=5, pady=2)
-            self.zc_vars[disp] = var
-            self.zc_buttons[disp] = cb
+        # if ctype == 'zeroconf' and disp not in self.zc_vars:
+        #     print(f"[DiscoveryService] Adding Zeroconf service: {disp}")
+        #     var = tk.BooleanVar(value=True)
+        #     cb = tk.Checkbutton(
+        #         self.zeroconf, text=disp,
+        #         variable=var, anchor='w'
+        #     )
+        #     cb.pack(fill=tk.X, padx=5, pady=2)
+        #     self.zc_vars[disp] = var
+        #     self.zc_buttons[disp] = cb
 
-        elif ctype == 'zeroconf_removed':
-            cb = self.zc_buttons.pop(disp, None)
-            if cb:
-                self.after(0, cb.destroy)
-            self.zc_vars.pop(disp, None)
+        # elif ctype == 'zeroconf_removed':
+        #     cb = self.zc_buttons.pop(disp, None)
+        #     if cb:
+        #         self.after(0, cb.destroy)
+        #     self.zc_vars.pop(disp, None)
         
         elif ctype == 'health_response':
             dev = cmd['device']
@@ -606,8 +650,12 @@ if __name__ == '__main__':
         for name, var in ui.device_vars.items():
             if not var.get(): continue
 
-            # grab the last-known IP for this device…
+            # grab the last-known IP and port for this device…
             ip = disco.device_states[name]['ip']
+            port = disco.device_states[name]['port']
+            if not ip or not port:
+                print(f"[DiscoveryService] No IP or port for {name}, skipping plugin dispatch")
+                continue
 
             # …and merge it into the command dict
             enriched = dict(cmd, ip=ip)
