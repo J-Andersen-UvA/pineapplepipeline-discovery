@@ -19,6 +19,9 @@ class PluginManager:
         # find module & call its handler
         if device_name in self._plugins:
             try:
+                if self._plugins[device_name]['subname'] != "":
+                    # if the plugin has a subname, add it to the message
+                    msg['subname'] = self._plugins[device_name]['subname']
                 self._plugins[device_name].handle_message(msg)
             except Exception as e:
                 # bubble error back to UI

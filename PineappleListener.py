@@ -26,7 +26,7 @@ class DiscoveryService:
         self.listen_conf = listen_conf
 
         self.device_states = {
-            d['attached_name']: {'hostname': d['hostname'], 'ip': None, 'resolved': False, 'reachable': False, 'checked': d.get('checked', False), 'port': None}
+            d['attached_name']: {'hostname': d['hostname'], 'ip': None, 'resolved': False, 'reachable': False, 'checked': d.get('checked', False), 'subname': d.get('subname', ''), 'port': None}
             for d in self.expected
         }
         self._device_subscribers = []
