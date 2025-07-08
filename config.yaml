@@ -1,10 +1,11 @@
 devices:
-  - hostname: Vislabs-iPhone.local
-    attached_name: iPhone Vislab
+  - hostname: LiveLinkFaceServer.local
+    attached_name: OSC and iPhone Vislab
     script: "scripts/example.py"
-  - hostname: Signlabs-iPhone.local
-    attached_name: iPhone SignLab
-    script: "scripts/example.py"
+    subname: Vislabs-iPhone.local
+  # - hostname: Signlabs-iPhone.local
+  #   attached_name: iPhone SignLab
+  #   script: "scripts/example.py"
   - hostname: ShogunLive.local
     attached_name: Shogun Live API
     script: "scripts/example.py"
