@@ -21,7 +21,8 @@ class PluginManager:
         # find module & call its handler
         if device_name in self._plugins:
             try:
-                if self._configs[device_name].get('subname', '') != "":
+                sub_entry = self._configs[device_name].get('subname', None)
+                if sub_entry is not None and sub_entry != '':
                     # if the plugin has a subname, add it to the message
                     msg['subname'] = self._configs[device_name]['subname']
                 self._plugins[device_name].handle_message(msg)

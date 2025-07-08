@@ -1,7 +1,7 @@
 devices:
   - hostname: ServerLLF._mocap._tcp.local
     attached_name: LLF server
-    script: "scripts/example.py"
+    script: "scripts/LLFinterface.py"
     subname: Vislabs-iPhone.local
     attached_subname: iPhone Vislab
   # - hostname: Vislabs-iPhone.local
