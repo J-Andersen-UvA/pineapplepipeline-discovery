@@ -26,7 +26,7 @@ class DiscoveryService:
         self.listen_conf = listen_conf
 
         self.device_states = {
-            d['attached_name']: {'hostname': d['hostname'], 'ip': None, 'resolved': False, 'reachable': False, 'checked': d.get('checked', False), 'subname': d.get('subname', ''), 'port': None}
+            d['attached_name']: {'hostname': d['hostname'], 'ip': None, 'resolved': False, 'reachable': False, 'checked': d.get('checked', False), 'subname': d.get('subname', ''), 'port': None, 'attached_subname': d.get('attached_subname', '')}
             for d in self.expected
         }
         self._device_subscribers = []
@@ -132,6 +132,24 @@ class DiscoveryService:
                             'name': name,
                             'ip': ip if state['ip'] else None
                         })
+
+                # Also try to find sub devices in the subname
+                if state.get('subname') and state['resolved']:
+                    try:
+                        sub_ip = socket.gethostbyname(state['subname'])
+                        # store it on the parent’s state
+                        if sub_ip != state.get('sub_ip'):
+                            state['sub_ip'] = sub_ip
+                            print(f"[DiscoveryService] Sub-device {state['subname']} connected at {sub_ip}")
+                            self._notify_command({
+                                'type': 'dns_sub',
+                                'name':    name,
+                                'subname': state['subname'],
+                                'ip':      sub_ip
+                            })
+                    except socket.gaierror:
+                        # sub device not found, ignore
+                        pass
             time.sleep(2)
 
     def _on_zc_state_change(self, zeroconf, service_type, name, state_change):
@@ -201,6 +219,8 @@ class DiscoveryService:
         for device in self.expected:
             if device['attached_name'] == name or name.startswith(device['attached_name']):
                 return device['attached_name']
+            elif device['hostname'] == name or name.startswith(device['hostname']):
+                return device['attached_name']
         return None
     
     def _zc_service_to_device(self, cmd):
@@ -221,7 +241,23 @@ class DiscoveryService:
             print(f"[DiscoveryService] Device '{dev_name}' updated with Zeroconf info: {state}")
             state['resolved'] = True
             state['checked'] = True
-            self._notify_device(dev_name, f"{state['ip']}:{state['port']}")
+            ip_port = f"{state['ip']}:{state['port']}"
+
+            # If the device has a subname, add an extra line to the UI under the device
+            if state.get('subname'):
+                # grab the first address from cmd['addresses']
+                addresses = cmd.get('addresses', [])
+                if addresses:
+                    sub_ip = addresses[0]
+                    state['sub_ip'] = sub_ip
+                    self._notify_command({
+                        'type':    'sub_device',
+                        'name':    dev_name,
+                        'subname': state['subname'],
+                        'ip':      sub_ip
+                    })
+
+            self._notify_device(dev_name, ip_port)
         else:
             print(f"[DiscoveryService] Zeroconf service '{name}' does not match any expected device")
 
@@ -417,6 +453,7 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         self.device_vars = {}
         self.device_buttons = {}
         self.device_hearts = {}
+        self.device_sub_labels = {}
         for d in service.expected:
             name = d['attached_name']
             var = tk.BooleanVar(value=True)
@@ -426,6 +463,13 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
 
             # Checkbox for device
             cb = tk.Checkbutton(row, text=name, variable=var, anchor='w', fg='gray80', command=lambda n=name: self._on_check_toggle(n))
+
+            # If the device has a subname, add new entry just text under the main device
+            if d.get('attached_subname', '') != '':
+                subname = d['attached_subname']
+                sub_label = ttk.Label(row, text=f"  (sub-device: {subname})", foreground='gray60')
+                sub_label.pack(side=tk.BOTTOM, padx=(10,0))
+                self.device_sub_labels[name] = sub_label
 
             # heart icon, default gray
             heart = ttk.Label(row, text="💚", foreground='gray')
@@ -527,6 +571,24 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
             self.current_name_label.config(text=f"Name:\t{disp}")
             # also log the file name
             self.msg_list.insert(tk.END, f"{time.strftime('%H:%M:%S')} – File: {disp}")
+        elif ctype in ('dns_sub', 'sub_device'):
+            print(f"[DiscoveryService] Sub-device DNS update: {disp}")
+            name    = cmd['name']
+            subname = cmd.get('subname','')
+            ip      = cmd.get('ip')
+
+            # 1) update the list-box log:
+            ts = time.strftime('%H:%M:%S')
+            if subname and ip:
+                self.msg_list.insert(
+                    tk.END,
+                    f"{ts} – Sub-device {subname} @ {ip}"
+                )
+            # 2) update the little sub-label under the main checkbox:
+            lbl = self.device_sub_labels.get(name)
+            if lbl and subname and ip:
+                # marshal back into the UI thread
+                self.after(0, lambda l=lbl, s=subname, i=ip: l.config(text=f"  (sub-device: {s} @ {i})"))
 
         # Update the status label
         self.status_label.config(text=f"Status:\t{self.status} {self.healthy}")
@@ -667,7 +729,8 @@ if __name__ == '__main__':
                     print(f"[DiscoveryService] Dispatching command to plugin {name}: {enriched}")
                 plugin_mgr.handle(name, enriched)
             except Exception as e:
-                print(f"[DiscoveryService] Plugin {name} failed to handle command: {cmd}")
+                if debug:
+                   print(f"[DiscoveryService] Plugin {name} failed to handle command: {cmd}")
                 if enriched.get('type') == 'health' or enriched.get('type') == 'health_timeout':
                     # if it's a health check, we still want to send the response
                     disco._notify_command({
