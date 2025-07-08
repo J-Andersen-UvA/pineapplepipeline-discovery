@@ -26,7 +26,7 @@ class DiscoveryService:
         self.listen_conf = listen_conf
 
         self.device_states = {
-            d['attached_name']: {'hostname': d['hostname'], 'ip': None, 'resolved': False, 'reachable': False, 'checked': d.get('checked', False), 'subname': d.get('subname', '')}
+            d['attached_name']: {'hostname': d['hostname'], 'ip': None, 'resolved': False, 'reachable': False, 'checked': d.get('checked', False), 'subname': d.get('subname', ''), 'port': None}
             for d in self.expected
         }
         self._device_subscribers = []
@@ -93,7 +93,7 @@ class DiscoveryService:
         """
         for cb in list(self._command_subscribers):
             try: cb(cmd)
-            except:
+            except Exception as e:
                 print(f"[DiscoveryService] Command handler failed: {cb} – {cmd}")
 
     def set_device_filter(self, fn):
@@ -512,7 +512,7 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
             disp = f"{disp} (unhealthy)"
             self.after(0, lambda: self.msg_list.insert(
                 tk.END,
-                f"{time.strftime('%H:%M:%S')} – {ctype}: {disp}"
+                f"{time.strftime('%H:%M:%S')} – {ctype}: {cmd.get('msg', 'No message') or disp}"
             ))
             self.healthy = "unhealthy"
         elif ctype == "health_response" and cmd.get('value'):
@@ -642,25 +642,39 @@ if __name__ == '__main__':
     # Load plugins (scripts) and prepare dispatch
     plugin_mgr = PluginManager(disco.expected, disco._notify_command)
 
-    def _dispatch_to_plugins(cmd):
+    def _dispatch_to_plugins(cmd, debug=False):
         # ignore Zeroconf internal events
         if cmd.get('type') in ('zeroconf', 'zeroconf_removed'):
             return
         # send to checked plugins
         for name, var in ui.device_vars.items():
             if not var.get(): continue
+            if not disco.device_states.get(name, {}).get('checked', True):
+                continue
 
             # grab the last-known IP and port for this device…
             ip = disco.device_states[name]['ip']
             port = disco.device_states[name]['port']
             if not ip or not port:
-                print(f"[DiscoveryService] No IP or port for {name}, skipping plugin dispatch")
                 continue
 
             # …and merge it into the command dict
             enriched = dict(cmd, ip=ip)
+            enriched['port'] = port
 
-            plugin_mgr.handle(name, enriched)
+            try:
+                if debug:
+                    print(f"[DiscoveryService] Dispatching command to plugin {name}: {enriched}")
+                plugin_mgr.handle(name, enriched)
+            except Exception as e:
+                print(f"[DiscoveryService] Plugin {name} failed to handle command: {cmd}")
+                if enriched.get('type') == 'health' or enriched.get('type') == 'health_timeout':
+                    # if it's a health check, we still want to send the response
+                    disco._notify_command({
+                        'type': 'health_response',
+                        'device': name,
+                        'value': False  # mark as unreachable
+                    })
 
     disco.subscribe_commands(_dispatch_to_plugins)
 

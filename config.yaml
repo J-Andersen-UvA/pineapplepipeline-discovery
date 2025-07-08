@@ -9,12 +9,12 @@ devices:
   - hostname: ShogunLive.local
     attached_name: Shogun Live API
     script: "scripts/example.py"
-  - hostname: OBS.local
-    attached_name: OBS API
-    script: "scripts/example.py"
+  - hostname: OBS
+    attached_name: OBS
+    script: "scripts/OBSinterface.py"
 
 server:
-  ws_port: 8765
+  ws_port: 8766
   ws_addr: "localhost"
   http_port: 8000
   http_addr: "localhost"
