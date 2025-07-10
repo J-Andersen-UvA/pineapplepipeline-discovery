@@ -1,5 +1,5 @@
 devices:
-  - hostname: ServerLLF._mocap._tcp.local
+  - hostname: LiveLinkFaceServer._mocap._tcp.local
     attached_name: LLF server
     script: "scripts/LLFinterface.py"
     subname: Vislabs-iPhone.local

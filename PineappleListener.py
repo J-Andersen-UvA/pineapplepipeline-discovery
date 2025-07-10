@@ -105,7 +105,7 @@ class DiscoveryService:
         while self._running:
             for name, state in self.device_states.items():
                 try:
-                    ip = socket.gethostbyname(state['hostname'])
+                    ip = socket.gethostbyname(state.get('hostname', None))
                     # first time resolution or IP changed?
                     if not state['resolved'] or state['ip'] != ip:
                         state['resolved'], state['ip'] = True, ip
@@ -120,18 +120,18 @@ class DiscoveryService:
                             'ip': ip
                         })
                 except socket.gaierror:
-                    # only fire once when we lose resolution
+                    # couldn’t resolve — mark it disconnected (once)
                     if state['resolved']:
                         state['resolved'] = False
-                        # self._notify_device(name, None)
+                        state['ip'] = None
                         print(f"[DiscoveryService] Device {name} disconnected, ip cached")
                         self._notify_device(name, None)
-                        # Notify the UI log
                         self._notify_command({
                             'type': 'dns',
                             'name': name,
-                            'ip': ip if state['ip'] else None
+                            'ip': None
                         })
+
 
                 # Also try to find sub devices in the subname
                 if state.get('subname', None):
@@ -670,7 +670,7 @@ if __name__ == '__main__':
     # Load plugins (scripts) and prepare dispatch
     plugin_mgr = PluginManager(disco.expected, disco._notify_command)
 
-    def _dispatch_to_plugins(cmd, debug=False):
+    def _dispatch_to_plugins(cmd, debug=True):
         ctype = cmd.get("type")
 
         # 1) ignore purely discovery‐side events
@@ -720,16 +720,16 @@ if __name__ == '__main__':
 
         try:
             if debug:
-                print(f"[DiscoveryService] Dispatching command to plugin {name}: {enriched}")
+                print(f"[DiscoveryService] Dispatching command to plugin {target}: {enriched}")
             plugin_mgr.handle(target, enriched)
         except Exception as e:
             if debug:
-                print(f"[DiscoveryService] Plugin {name} failed to handle command: {cmd}")
+                print(f"[DiscoveryService] Plugin {target} failed to handle command: {cmd}")
             if enriched.get('type') == 'health' or enriched.get('type') == 'health_timeout':
                 # if it's a health check, we still want to send the response
                 disco._notify_command({
                     'type': 'health_response',
-                    'device': name,
+                    'device': target,
                     'value': False  # mark as unreachable
                 })
 
