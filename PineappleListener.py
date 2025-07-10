@@ -123,8 +123,7 @@ class DiscoveryService:
                     # couldn’t resolve — mark it disconnected (once)
                     if state['resolved']:
                         state['resolved'] = False
-                        state['ip'] = None
-                        print(f"[DiscoveryService] Device {name} disconnected, ip cached")
+                        print(f"[DiscoveryService] Device {name} disconnected, ip cached. State: {state}")
                         self._notify_device(name, None)
                         self._notify_command({
                             'type': 'dns',
