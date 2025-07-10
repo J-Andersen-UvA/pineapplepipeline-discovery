@@ -1,8 +1,12 @@
 devices:
-  - hostname: LiveLinkFaceServer.local
-    attached_name: OSC and iPhone Vislab
-    script: "scripts/example.py"
+  - hostname: LiveLinkFaceServer._mocap._tcp.local
+    attached_name: LLF server
+    script: "scripts/LLFinterface.py"
     subname: Vislabs-iPhone.local
+    attached_subname: iPhone Vislab
+  # - hostname: Vislabs-iPhone.local
+  #   attached_name: iPhone Vislab
+  #   script: "scripts/example.py"
   # - hostname: Signlabs-iPhone.local
   #   attached_name: iPhone SignLab
   #   script: "scripts/example.py"
