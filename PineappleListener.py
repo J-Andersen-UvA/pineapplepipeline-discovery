@@ -18,7 +18,7 @@ from PluginManager import PluginManager  # your step-2 script
 MAX_MESSAGE_LENGTH = 100  # max length of messages in the UI
 
 class DiscoveryService:
-    def __init__(self, config_path='config.yaml', zeroconf_type: str = '_mocap._tcp.local.'):
+    def __init__(self, config_path='C:\\Users\\VICON\\Desktop\\Code\\recording\\pineapplediscoverypipeline\\config.yaml', zeroconf_type: str = '_mocap._tcp.local.'):
         # 1) Load expected devices
         devices, server, listen_conf = self._load_config(config_path)
         self.expected = devices
@@ -340,14 +340,14 @@ class DiscoveryService:
             for name, state in self.device_states.items():
                 if state['resolved'] and state.get('checked', True):
                     last = self._last_health_response.get(name, 0.0)
-                    if now - last > self._health_interval + 0.5:  # allow a small grace period
+                    if now - last > self._health_interval + 1:  # allow a small grace period
                         # they've timed out!
                         state['reachable'] = False
                         # reset so we only fire once until they reply again
                         self._last_health_response[name] = now
                         self._notify_command({
                             'type':   'health_timeout',
-                            'value': name
+                            'value': state.get('hostname', name)
                         })
                     else:
                         state['reachable'] = True
@@ -531,21 +531,33 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
 
     def _on_command_event(self, cmd):
         ctype = cmd.get('type')
-        # prefer 'value' if it exists, otherwise fall back to 'name'
-        disp = cmd.get('value') or f"{cmd.get('name')}:{cmd.get('port')}" or '<unknown>'
-        check_health = ctype == "health_response" and not cmd.get('value') or ctype == "health_timeout"
-        name  = cmd.get('device') or f"{cmd.get('name')}:{cmd.get('port')}" or '<unknown>'
+        device = cmd.get('device')
 
-        # Log in Last Messages
+        # look up the latest ip/port from your DiscoveryService state
+        state = self.service.device_states.get(device, {})
+        ip    = state.get('ip', 'unknown')
+        port  = state.get('port', 'unknown')
+
+        # build a human‐friendly “disp” string
+        if ctype in ("health_response", "health_timeout"):
+            # e.g. "OBS (192.168.10.1:8765)"
+            disp = f"{device} ({ip}:{port})"
+        else:
+            # your existing logic for other message types
+            disp = cmd.get('value') or f"{cmd.get('name')}:{cmd.get('port')}" or '<unknown>'
+
+        # determine if this is an unhealthy‐check event
+        check_health = (ctype == "health_response" and not cmd.get('value')) \
+                    or (ctype == "health_timeout")
+
+        # Log it
         if check_health:
-            disp = f"{disp} (unhealthy)"
             self.after(0, lambda: self.msg_list.insert(
                 tk.END,
-                f"{time.strftime('%H:%M:%S')} – {ctype}: {cmd.get('msg', 'No message') or disp}"
+                f"{time.strftime('%H:%M:%S')} – {ctype}: {disp} (unhealthy)"
             ))
             self.healthy = "unhealthy"
-        elif ctype == "health_response" and cmd.get('value'):
-            self.healthy = ""
+
         
         # Update status area, based on type
         if ctype == 'recordStart':
@@ -656,7 +668,7 @@ if __name__ == '__main__':
     root.title("Pineapple Listener UI")
 
     print("Initializing Discovery Service...")
-    disco = DiscoveryService('config.yaml')
+    disco = DiscoveryService('C:\\Users\\VICON\\Desktop\\Code\\recording\\pineapplediscoverypipeline\\config.yaml')
 
     print("Initializing UI...")
     ui = StyledDiscoveryUI(root, disco)
