@@ -10,9 +10,9 @@ devices:
   # - hostname: Signlabs-iPhone.local
   #   attached_name: iPhone SignLab
   #   script: "scripts/example.py"
-  - hostname: ShogunLive.local
+  - hostname: ShogunLive._mocap._tcp.local
     attached_name: Shogun Live API
-    script: "scripts/example.py"
+    script: "scripts/ShogunInterface.py"
   - hostname: OBS
     attached_name: OBS
     script: "scripts/OBSinterface.py"
