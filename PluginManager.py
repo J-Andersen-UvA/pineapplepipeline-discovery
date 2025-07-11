@@ -1,4 +1,5 @@
 import importlib.machinery, importlib.util
+import os
 
 class PluginManager:
     def __init__(self, devices, send_response):
@@ -6,7 +7,23 @@ class PluginManager:
         self._configs = {}
         for dev in devices:
             name = dev['attached_name']
-            path = dev['script']
+            raw_path = dev['script']
+
+            # Make path absolute and normalized
+            path = os.path.expanduser(raw_path)
+            path = os.path.expandvars(path)
+            if not os.path.isabs(path):
+                # Resolve relative to this file’s directory:
+                base_dir = os.path.dirname(__file__)
+                path = os.path.normpath(os.path.join(base_dir, path))
+            else:
+                path = os.path.normpath(path)
+
+            if not os.path.exists(path):
+                raise FileNotFoundError(
+                    f"Plugin script '{path}' does not exist for device '{name}'."
+                )
+
             # load module from path
             loader = importlib.machinery.SourceFileLoader(name, path)
             spec   = importlib.util.spec_from_loader(loader.name, loader)
