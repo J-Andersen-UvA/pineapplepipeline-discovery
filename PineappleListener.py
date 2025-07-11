@@ -17,6 +17,8 @@ from PluginManager import PluginManager  # your step-2 script
 
 MAX_MESSAGE_LENGTH = 100  # max length of messages in the UI
 
+last_filename = ""
+
 class DiscoveryService:
     def __init__(self, config_path='C:\\Users\\VICON\\Desktop\\Code\\recording\\pineapplediscoverypipeline\\config.yaml', zeroconf_type: str = '_mocap._tcp.local.'):
         # 1) Load expected devices
@@ -745,5 +747,33 @@ if __name__ == '__main__':
                 })
 
     disco.subscribe_commands(_dispatch_to_plugins)
+
+    def remember_filename(cmd):
+        global last_filename
+        if cmd.get('type') == 'fileName':
+            last_filename = cmd.get('value')
+
+    disco.subscribe_commands(remember_filename)
+
+    def resend_on_connect(name, ip_and_port):
+        global last_filename
+        if not ip_and_port or not last_filename:
+            return
+
+        # pull apart ip/port if needed
+        ip, port = ip_and_port.split(':') if ':' in ip_and_port else (ip_and_port, disco.server['ws_port'])
+
+        enriched = {
+            'type':   'fileName',
+            'device': name,
+            'value':  last_filename,
+            'ip':      ip,
+            'port':    port,
+            'sub_ip':  disco.device_states[name].get('sub_ip')
+        }
+        plugin_mgr.handle(name, enriched)
+        print(f"[Reconnect] sent last filename {last_filename!r} → {name} @ {ip}:{port}")
+
+    disco.subscribe_devices(resend_on_connect)
 
     root.mainloop()
