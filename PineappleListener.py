@@ -114,7 +114,12 @@ class DiscoveryService:
                         # reset reachability when it reappears
                         state['reachable'] = False
                         print(f"[DiscoveryService] Device {name} connected at {ip}")
-                        self._notify_device(name, ip)
+                        # Preserve existing port if available, otherwise just send IP
+                        existing_port = state.get('port')
+                        if existing_port:
+                            self._notify_device(name, f"{ip}:{existing_port}")
+                        else:
+                            self._notify_device(name, ip)
                         # Notify the UI log
                         self._notify_command({
                             'type': 'dns',
