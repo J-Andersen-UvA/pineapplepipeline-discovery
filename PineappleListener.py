@@ -549,6 +549,8 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         if ctype in ("health_response", "health_timeout"):
             # e.g. "OBS (192.168.10.1:8765)"
             disp = f"{device} ({ip}:{port})"
+            if cmd.get('msg'):
+                disp += f" – {cmd['msg']}"
         else:
             # your existing logic for other message types
             disp = cmd.get('value') or f"{cmd.get('name')}:{cmd.get('port')}" or '<unknown>'
