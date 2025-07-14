@@ -564,6 +564,18 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
                 f"{time.strftime('%H:%M:%S')} – {ctype}: {disp} (unhealthy)"
             ))
             self.healthy = "unhealthy"
+        else:
+            # a healthy health_response just came in; if *all* checked devices
+            # are now reachable, clear the overall flag
+            if ctype == "health_response" and cmd.get('value'):
+                all_ok = True
+                for dev, st in self.service.device_states.items():
+                    # only consider devices the user has checked on
+                    if st.get('checked', False) and not st.get('reachable', False):
+                        all_ok = False
+                        break
+                if all_ok:
+                    self.healthy = ""
 
         
         # Update status area, based on type
@@ -631,6 +643,16 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
             if heart:
                 # 🖤 or gray 💚 for “inactive”
                 heart.config(text='💚', foreground='gray')
+
+        # Reset reachable state
+        if toggled_name is not None and self.device_vars[toggled_name].get():
+            self.service.device_states[toggled_name]['reachable'] = False
+            self.healthy = "unhealthy"
+            # Send a health check to this device
+            self.service._notify_command({
+                'type': 'health',
+                'device': toggled_name
+            })
 
     def _beat_heart(self, name):
         """
