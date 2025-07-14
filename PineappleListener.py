@@ -611,8 +611,8 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
 
         elif ctype == "health":
             # only animate if that device is checked
-            if self.device_vars.get(name, False).get():
-                self._beat_heart(name)
+            if self.device_vars.get(device, False).get():
+                self._beat_heart(device)
             # we don’t need to log health‐checks themselves, so return
             return
 

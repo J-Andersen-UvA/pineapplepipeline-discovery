@@ -59,7 +59,6 @@ async def _send_to_llf(cmd : dict):
                 "value":  False
             })
             return
-        print(f"[DEBUG] Sending health check with ip {payload}")
 
     try:
         async with websockets.connect(uri) as ws:
