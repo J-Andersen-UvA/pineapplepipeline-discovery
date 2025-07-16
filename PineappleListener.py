@@ -507,6 +507,10 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         # Force initial DNS update
         # self.service.rescan_devices()
 
+    def _ui(self, fn, *args, **kwargs):
+        """Marshal fn(*args, **kwargs) onto the Tk UI thread."""
+        self.after(0, lambda: fn(*args, **kwargs))
+
     def _on_device_event(self, name, ip_and_port):
         cb = self.device_buttons.get(name)
         state = self.service.device_states[name]
@@ -534,7 +538,7 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
             if heart and not state['ip']:
                 heart.config(text='💚', foreground='gray')
 
-        self.after(0, _update)
+        self._ui(_update)
 
     def _on_command_event(self, cmd):
         ctype = cmd.get('type')
@@ -550,54 +554,51 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
 
         # build a human-friendly “disp” string for all *non-health* events
         disp = cmd.get('value') or f"{cmd.get('name')}:{cmd.get('port')}" or '<unknown>'
-
-        # a healthy health_response just came in; if *all* checked devices
-        # are now reachable, clear the overall flag
-        if ctype == "health_response" and cmd.get('value'):
-            all_ok = True
-            for dev, st in self.service.device_states.items():
-                # only consider devices the user has checked on
-                if st.get('checked', False) and not st.get('reachable', False):
-                    all_ok = False
-                    break
-            if all_ok:
-                self.healthy = ""
     
-        # Update status area, based on type
-        if ctype == 'recordStart':
-            self.status = "Recording"
-        elif ctype == 'recordStop':
-            self.status = "Idle"
-        elif ctype == 'fileName':
-            self.current_name_label.config(text=f"Name:\t{disp}")
-            # also log the file name
-            self.msg_list.insert(tk.END, f"{time.strftime('%H:%M:%S')} – File: {disp}")
-        elif ctype in ('dns_sub'):
-            name    = cmd['name']
-            subname = cmd.get('subname','')
-            ip      = cmd.get('ip')
+        # non-health dispatch
+        handler = {
+            'recordStart':   self._handle_record_start,
+            'recordStop':    self._handle_record_stop,
+            'fileName':      self._handle_file_name,
+            'dns_sub':       self._handle_dns_sub,
+        }.get(ctype, self._handle_default)
 
-            # 1) update the list-box log:
-            ts = time.strftime('%H:%M:%S')
-            if subname and ip:
-                self.msg_list.insert(
-                    tk.END,
-                    f"{ts} – Sub-device {subname} @ {ip}"
-                )
-            # 2) update the little sub-label under the main checkbox:
-            lbl = self.device_sub_labels.get(name)
-            if lbl and subname and ip:
-                # marshal back into the UI thread
-                self.after(0, lambda l=lbl, s=subname, i=ip: l.config(text=f"  (sub-device: {s} @ {i})"))
-
-        # Update the status label
-        self.status_label.config(text=f"Status:\t{self.status} {self.healthy}")
-        # Scroll to bottom
-        self.after(0, lambda: self.msg_list.see(tk.END))
-
-        # Trim the top of the list if too long
+        handler(cmd)
+        self._ui(self.status_label.config,
+                 text=f"Status:\t{self.status} {self.healthy}")
+        self._ui(self.msg_list.see, tk.END)
         if self.msg_list.size() > MAX_MESSAGE_LENGTH:
-            self.after(0, lambda: self.msg_list.delete(0))        
+            self._ui(self.msg_list.delete, 0)
+
+        # Scroll to bottom
+        self._ui(self.msg_list.insert, tk.END)
+
+    def _handle_record_start(self, cmd):
+        self.status = "Recording"
+
+    def _handle_record_stop(self, cmd):
+        self.status = "Idle"
+
+    def _handle_file_name(self, cmd):
+        disp = cmd['value'] or '<unknown>'
+        self._ui(self.current_name_label.config,
+                 text=f"Name:\t{disp}")
+        ts = time.strftime('%H:%M:%S')
+        self._ui(self.msg_list.insert, tk.END, f"{ts} – File: {disp}")
+
+    def _handle_dns_sub(self, cmd):
+        name, subname, ip = cmd['name'], cmd.get('subname',''), cmd.get('ip')
+        if subname and ip:
+            ts = time.strftime('%H:%M:%S')
+            self._ui(self.msg_list.insert, tk.END,
+                     f"{ts} – Sub-device {subname} @ {ip}")
+            lbl = self.device_sub_labels.get(name)
+            if lbl:
+                self._ui(lbl.config, text=f"  (sub-device: {subname} @ {ip})")
+
+    def _handle_default(self, cmd):
+        # fallback for unexpected ctypes
+        pass
 
     def _handle_health_event(self, cmd):
         """
@@ -615,37 +616,39 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         # — log & color for explicit health_response or timeout —
         if ctype == "health_response":
             is_healthy = bool(cmd.get("value"))
-            text = f"{timestamp} – health_response: {device} " \
-                   f"({'healthy' if is_healthy else 'unhealthy'})"
-            self.after(0, lambda: self.msg_list.insert(tk.END, text))
+            text =  f"{timestamp} – health_response: {device} " \
+                    f"{cmd.get('msg', None)} " \
+                    f"({'healthy' if is_healthy else 'unhealthy'})"
+            
+            # Only log health response if device is unhealthy
+            if not is_healthy:
+                self._ui(self.msg_list.insert, tk.END, text)
 
             if heart:
                 color = "green" if is_healthy else "red"
-                self.after(0, lambda: heart.config(foreground=color))
+                self._ui(heart.config, text='💚', foreground=color)
 
             # update overall state
             self.healthy = "" if is_healthy and self._all_devices_ok() else "unhealthy"
         elif ctype == "health_timeout":
             # log
             text = f"{timestamp} – health_timeout: {device} (unhealthy)"
-            self.after(0, lambda: self.msg_list.insert(tk.END, text))
+            self._ui(self.msg_list.insert, tk.END, text)
             # color heart red
             if heart:
-                self.after(0, lambda: heart.config(foreground="red"))
+                self._ui(heart.config, foreground='red')
             # update overall flag
             self.healthy = "unhealthy"
-        else:
-            # if the device is currently “up” animate its heartbeat
-            if self.device_vars.get(device, tk.BooleanVar()).get():
-                self._beat_heart(device)
+
+        self._beat_heart(device)
 
         # 3) trim logs just once
         if self.msg_list.size() > MAX_MESSAGE_LENGTH:
-            self.after(0, lambda: self.msg_list.delete(0))
+            self._ui(self.msg_list.delete, 0)
 
         # 4) refresh the status label
         self.status_label.config(text=f"Status:\t{self.status} {self.healthy}")
-        self.after(0, lambda: self.msg_list.see(tk.END))
+        self._ui(self.msg_list.see, tk.END)
 
         return True
 
