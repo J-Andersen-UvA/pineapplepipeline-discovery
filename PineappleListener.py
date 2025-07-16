@@ -507,6 +507,10 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         # Force initial DNS update
         # self.service.rescan_devices()
 
+    def _ui(self, fn, *args, **kwargs):
+        """Marshal fn(*args, **kwargs) onto the Tk UI thread."""
+        self.after(0, lambda: fn(*args, **kwargs))
+
     def _on_device_event(self, name, ip_and_port):
         cb = self.device_buttons.get(name)
         state = self.service.device_states[name]
@@ -534,7 +538,7 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
             if heart and not state['ip']:
                 heart.config(text='💚', foreground='gray')
 
-        self.after(0, _update)
+        self._ui(_update)
 
     def _on_command_event(self, cmd):
         ctype = cmd.get('type')
@@ -545,90 +549,118 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         ip    = state.get('ip', 'unknown')
         port  = state.get('port', 'unknown')
 
-        # build a human‐friendly “disp” string
-        if ctype in ("health_response", "health_timeout"):
-            # e.g. "OBS (192.168.10.1:8765)"
-            disp = f"{device} ({ip}:{port})"
-            if cmd.get('msg'):
-                disp += f" – {cmd['msg']}"
-        else:
-            # your existing logic for other message types
-            disp = cmd.get('value') or f"{cmd.get('name')}:{cmd.get('port')}" or '<unknown>'
-
-        # determine if this is an unhealthy‐check event
-        check_health = (ctype == "health_response" and not cmd.get('value')) \
-                    or (ctype == "health_timeout")
-
-        # Log it
-        if check_health:
-            self.after(0, lambda: self.msg_list.insert(
-                tk.END,
-                f"{time.strftime('%H:%M:%S')} – {ctype}: {disp} (unhealthy)"
-            ))
-            self.healthy = "unhealthy"
-        else:
-            # a healthy health_response just came in; if *all* checked devices
-            # are now reachable, clear the overall flag
-            if ctype == "health_response" and cmd.get('value'):
-                all_ok = True
-                for dev, st in self.service.device_states.items():
-                    # only consider devices the user has checked on
-                    if st.get('checked', False) and not st.get('reachable', False):
-                        all_ok = False
-                        break
-                if all_ok:
-                    self.healthy = ""
-
-        
-        # Update status area, based on type
-        if ctype == 'recordStart':
-            self.status = "Recording"
-        elif ctype == 'recordStop':
-            self.status = "Idle"
-        elif ctype == 'fileName':
-            self.current_name_label.config(text=f"Name:\t{disp}")
-            # also log the file name
-            self.msg_list.insert(tk.END, f"{time.strftime('%H:%M:%S')} – File: {disp}")
-        elif ctype in ('dns_sub'):
-            name    = cmd['name']
-            subname = cmd.get('subname','')
-            ip      = cmd.get('ip')
-
-            # 1) update the list-box log:
-            ts = time.strftime('%H:%M:%S')
-            if subname and ip:
-                self.msg_list.insert(
-                    tk.END,
-                    f"{ts} – Sub-device {subname} @ {ip}"
-                )
-            # 2) update the little sub-label under the main checkbox:
-            lbl = self.device_sub_labels.get(name)
-            if lbl and subname and ip:
-                # marshal back into the UI thread
-                self.after(0, lambda l=lbl, s=subname, i=ip: l.config(text=f"  (sub-device: {s} @ {i})"))
-
-        # Update the status label
-        self.status_label.config(text=f"Status:\t{self.status} {self.healthy}")
-        # Scroll to bottom
-        self.after(0, lambda: self.msg_list.see(tk.END))
-
-        # Trim the top of the list if too long
-        if self.msg_list.size() > MAX_MESSAGE_LENGTH:
-            self.after(0, lambda: self.msg_list.delete(0))        
-        elif ctype == 'health_response':
-            dev = cmd['device']
-            ok  = cmd.get('value', False)
-            heart = self.device_hearts.get(dev)
-            if heart:
-                color = 'green' if ok else 'red'
-                self.after(0, lambda c=color, h=heart: h.config(foreground=c))
-
-        elif ctype == "health":
-            # only animate if that device is checked
-            if self.device_vars.get(device, False).get():
-                self._beat_heart(device)
-            # we don’t need to log health‐checks themselves, so return
+        if self._handle_health_event(cmd):
             return
+
+        # build a human-friendly “disp” string for all *non-health* events
+        disp = cmd.get('value') or f"{cmd.get('name')}:{cmd.get('port')}" or '<unknown>'
+    
+        # non-health dispatch
+        handler = {
+            'recordStart':   self._handle_record_start,
+            'recordStop':    self._handle_record_stop,
+            'fileName':      self._handle_file_name,
+            'dns_sub':       self._handle_dns_sub,
+        }.get(ctype, self._handle_default)
+
+        handler(cmd)
+        self._ui(self.status_label.config,
+                 text=f"Status:\t{self.status} {self.healthy}")
+        self._ui(self.msg_list.see, tk.END)
+        if self.msg_list.size() > MAX_MESSAGE_LENGTH:
+            self._ui(self.msg_list.delete, 0)
+
+        # Scroll to bottom
+        self._ui(self.msg_list.insert, tk.END)
+
+    def _handle_record_start(self, cmd):
+        self.status = "Recording"
+
+    def _handle_record_stop(self, cmd):
+        self.status = "Idle"
+
+    def _handle_file_name(self, cmd):
+        disp = cmd['value'] or '<unknown>'
+        self._ui(self.current_name_label.config,
+                 text=f"Name:\t{disp}")
+        ts = time.strftime('%H:%M:%S')
+        self._ui(self.msg_list.insert, tk.END, f"{ts} – File: {disp}")
+
+    def _handle_dns_sub(self, cmd):
+        name, subname, ip = cmd['name'], cmd.get('subname',''), cmd.get('ip')
+        if subname and ip:
+            ts = time.strftime('%H:%M:%S')
+            self._ui(self.msg_list.insert, tk.END,
+                     f"{ts} – Sub-device {subname} @ {ip}")
+            lbl = self.device_sub_labels.get(name)
+            if lbl:
+                self._ui(lbl.config, text=f"  (sub-device: {subname} @ {ip})")
+
+    def _handle_default(self, cmd):
+        # fallback for unexpected ctypes
+        pass
+
+    def _handle_health_event(self, cmd):
+        """
+        Returns True if this cmd was a health probe (of any kind)
+        and was fully handled here, False otherwise.
+        """
+        ctype = cmd.get("type")
+        if ctype not in ("health", "health_response", "health_timeout"):
+            return False
+
+        device = cmd["device"]
+        heart = self.device_hearts.get(device)
+        timestamp = time.strftime("%H:%M:%S")
+
+        # — log & color for explicit health_response or timeout —
+        if ctype == "health_response":
+            is_healthy = bool(cmd.get("value"))
+            text =  f"{timestamp} – health_response: {device} " \
+                    f"{cmd.get('msg', None)} " \
+                    f"({'healthy' if is_healthy else 'unhealthy'})"
+            
+            # Only log health response if device is unhealthy
+            if not is_healthy:
+                self._ui(self.msg_list.insert, tk.END, text)
+
+            if heart:
+                color = "green" if is_healthy else "red"
+                self._ui(heart.config, text='💚', foreground=color)
+
+            # update overall state
+            self.healthy = "" if is_healthy and self._all_devices_ok() else "unhealthy"
+        elif ctype == "health_timeout":
+            # log
+            text = f"{timestamp} – health_timeout: {device} (unhealthy)"
+            self._ui(self.msg_list.insert, tk.END, text)
+            # color heart red
+            if heart:
+                self._ui(heart.config, foreground='red')
+            # update overall flag
+            self.healthy = "unhealthy"
+
+        self._beat_heart(device)
+
+        # 3) trim logs just once
+        if self.msg_list.size() > MAX_MESSAGE_LENGTH:
+            self._ui(self.msg_list.delete, 0)
+
+        # 4) refresh the status label
+        self.status_label.config(text=f"Status:\t{self.status} {self.healthy}")
+        self._ui(self.msg_list.see, tk.END)
+
+        return True
+
+    def _all_devices_ok(self):
+        """
+        Returns True if every device that’s been checked is currently marked reachable.
+        """
+        for dev, st in self.service.device_states.items():
+            # Only consider devices the user has opted to check
+            if st.get('checked', False) and not st.get('reachable', False):
+                return False
+        return True
 
     def _on_check_toggle(self, toggled_name):
         """
