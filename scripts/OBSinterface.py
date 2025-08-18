@@ -36,12 +36,18 @@ def handle_message(cmd: dict):
         return
 
     # Schedule the coroutine on our dedicated loop
-    asyncio.run_coroutine_threadsafe(_send_to_obs(cmd), _loop)
+    if _loop is not None:
+        asyncio.run_coroutine_threadsafe(_send_to_obs(cmd), _loop)
+    else:
+        print("[OBSInterface] Error: Event loop is not initialized.")
 
 async def _send_to_obs(cmd: dict):
     """
     Connect → send → (maybe receive health reply) → report back → close.
     """
+    if _cfg is None or "attached_name" not in _cfg:
+        print("[OBSInterface] Error: _cfg is not initialized or missing 'attached_name'")
+        return
     device = _cfg["attached_name"]
     uri    = f"ws://{cmd['ip']}:{cmd['port']}"
     payload = _build_payload(cmd)
@@ -57,21 +63,23 @@ async def _send_to_obs(cmd: dict):
             if cmd["type"] == "health":
                 reply = await asyncio.wait_for(ws.recv(), timeout=5)
                 ok = (reply == "Good")
-                _send_response({
-                    "type":   "health_response",
-                    "device": device,
-                    "value":  ok,
-                    "msg":    reply
+                if _send_response is not None:
+                    _send_response({
+                        "type":   "health_response",
+                        "device": device,
+                        "value":  ok,
+                        "msg":    reply
                 })
 
     except Exception as e:
         # on any error, report failure for health
         if cmd["type"] == "health":
-            _send_response({
-                "type":   "health_response",
-                "device": device,
-                "value":  False
-            })
+            if _send_response is not None:
+                _send_response({
+                    "type":   "health_response",
+                    "device": device,
+                    "value":  False
+                })
         print(f"[OBSInterface] Error talking to {uri}: {e}")
 
 def _build_payload(cmd: dict) -> str | None:

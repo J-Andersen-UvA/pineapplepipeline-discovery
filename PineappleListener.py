@@ -15,9 +15,14 @@ import websockets
 import tkinterStyle as tkstyle
 from PluginManager import PluginManager  # your step-2 script
 
+CONFIG_PATH = 'C:\\Users\\VICON\\Desktop\\Code\\recording\\pineapplediscoverypipeline\\config.yaml'
 MAX_MESSAGE_LENGTH = 100  # max length of messages in the UI
 
 last_filename = ""
+
+# Logging
+from logger.recording_log import RecordingLog, _utc_now_iso
+LOG_PATH = yaml.safe_load(open(CONFIG_PATH)).get('logging_path', 'D:\\allRecordings\\Logs')
 
 class DiscoveryService:
     def __init__(self, config_path='C:\\Users\\VICON\\Desktop\\Code\\recording\\pineapplediscoverypipeline\\config.yaml', zeroconf_type: str = '_mocap._tcp.local.'):
@@ -107,7 +112,8 @@ class DiscoveryService:
         while self._running:
             for name, state in self.device_states.items():
                 try:
-                    ip = socket.gethostbyname(state.get('hostname', None))
+                    hostname = state.get('hostname') or ''
+                    ip = socket.gethostbyname(hostname)
                     # first time resolution or IP changed?
                     if not state['resolved'] or state['ip'] != ip:
                         state['resolved'], state['ip'] = True, ip
@@ -531,7 +537,8 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
 
         # Since we're in a callback thread, marshal back to the UI thread
         def _update():
-            cb.config(text=display, fg=color)
+            if cb is not None:
+                cb.config(text=display, fg=color)
 
             # whenever we lose IP, reset the heart to neutral gray
             heart = self.device_hearts.get(name)
@@ -723,6 +730,71 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         self.service.shutdown()
         self.master.destroy()
 
+class RecordingLogWriter:
+    """
+    Single-responsibility helper owned by PineappleListener to write to recordings.jsonl.
+    Keeps minimal state and exposes small event handlers.
+    """
+    def __init__(self, log_path: str):
+        from typing import Optional
+
+        self.log = RecordingLog(log_path)
+        self._current: dict[str, Optional[str]] = {
+            "recording_id": None,
+            "gloss": None,
+            "capture_start": None,
+        }
+
+    @staticmethod
+    def _new_recording_id() -> str:
+        return _utc_now_iso().replace(":", "-")
+
+    # --- public event handlers ---
+    def on_file_name(self, gloss: str | None):
+        self._current["gloss"] = gloss or "unnamed"
+
+    def on_record_start(self):
+        gloss = self._current.get("gloss") or "unnamed"
+        rid = self._new_recording_id()
+        self.log.create_recording(rid, gloss=gloss, capture_start=_utc_now_iso())
+        # Seed placeholders for late Vicon/Shogun post outputs
+        self.log.add_asset(rid, "original_animation_fbx", path=None, machine="Vicon", status="pending_post")
+        self.log.add_asset(rid, "mocap_marker_csv",       path=None, machine="Vicon", status="pending_post")
+        self._current.update({"recording_id": rid, "capture_start": _utc_now_iso()})
+
+    def on_record_stop(self):
+        rid = self._current.get("recording_id")
+        if rid:
+            self.log.set_capture_times(rid, capture_end=_utc_now_iso())
+        self._current.update({"recording_id": None, "capture_start": None})
+
+    def on_asset_ready(self, cmd: dict):
+        """
+        Accepts a dict with keys:
+          asset_type, path, machine?, mtime?, recording_hint?
+        Falls back to the most recent record with same gloss if no active id.
+        """
+        asset_type = cmd.get("asset_type") or ""
+        path       = cmd.get("path")
+        machine    = cmd.get("machine") or cmd.get("device") or "UNKNOWN"
+        mtime      = cmd.get("mtime") or _utc_now_iso()
+
+        rid = self._current.get("recording_id") or ""
+
+        if not rid:
+            hint = cmd.get("recording_hint") or self._current.get("gloss")
+            # search recent records for same gloss (lightweight)
+            recs = self.log.read_all()
+            for rec in reversed(recs[-50:]):
+                if rec.get("gloss") == hint:
+                    rid = rec["recording_id"]
+                    break
+            if not rid:
+                # safety net: never drop files; create a minimal record
+                self.on_record_start()
+                rid = self._current["recording_id"] or ""
+
+        self.log.add_asset(rid, asset_type, path=path, machine=machine, status="ready", mtime=mtime)
 
 if __name__ == '__main__':
     root = tk.Tk()
@@ -731,7 +803,7 @@ if __name__ == '__main__':
     root.title("Pineapple Listener UI")
 
     print("Initializing Discovery Service...")
-    disco = DiscoveryService('C:\\Users\\VICON\\Desktop\\Code\\recording\\pineapplediscoverypipeline\\config.yaml')
+    disco = DiscoveryService(CONFIG_PATH)
 
     print("Initializing UI...")
     ui = StyledDiscoveryUI(root, disco)
@@ -741,11 +813,20 @@ if __name__ == '__main__':
     disco.start()  # start the discovery service
     print("Discovery Service started.")
 
+    log_writer = RecordingLogWriter(LOG_PATH)
     # Load plugins (scripts) and prepare dispatch
     plugin_mgr = PluginManager(disco.expected, disco._notify_command)
 
     def _dispatch_to_plugins(cmd, debug=True):
         ctype = cmd.get("type")
+
+        # --- log hooks ---
+        if ctype == "recordStart":
+            log_writer.on_record_start()
+        elif ctype == "recordStop":
+            log_writer.on_record_stop()
+        elif ctype == "asset_ready":
+            log_writer.on_asset_ready(cmd)
 
         # 1) ignore purely discovery‐side events
         if ctype in ("zeroconf", "zeroconf_removed", "dns", "dns_sub"):
@@ -813,6 +894,7 @@ if __name__ == '__main__':
         global last_filename
         if cmd.get('type') == 'fileName':
             last_filename = cmd.get('value')
+            log_writer.on_file_name(last_filename)  # keep writer's state in sync
 
     disco.subscribe_commands(remember_filename)
 

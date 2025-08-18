@@ -27,3 +27,5 @@ listen_server:
   module: unrealServer
   entrypoint: receive_messages
   uri: wss://signcollect.nl/unrealServer/
+
+logging_path: D:/allRecordings/Logs/
