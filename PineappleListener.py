@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from zeroconf import Zeroconf, ServiceBrowser, ServiceStateChange
 from listen_server import ListenServer  # your step-1 script
 import websockets
-from pineapple_paths import SessionLayout
+from pineapple_paths import SessionLayout, prune_empty_session_tree
 last_layout = None
 
 import tkinterStyle as tkstyle
@@ -735,10 +735,6 @@ class StyledDiscoveryUI(tkstyle.DiscoveryUI):
         self.master.destroy()
 
 class RecordingLogWriter:
-    """
-    Single-responsibility helper owned by PineappleListener to write to recordings.jsonl.
-    Keeps minimal state and exposes small event handlers.
-    """
     def __init__(self, log_path: str):
         from typing import Optional
 
@@ -763,6 +759,9 @@ class RecordingLogWriter:
             os.makedirs(self._session_meta_dir, exist_ok=True)
 
     def on_record_start(self):
+        global last_layout
+        last_layout.data_incoming = True
+
         gloss = self._current.get("gloss") or "unnamed"
         rid = self._new_recording_id()
         now = _utc_now_iso()
@@ -900,7 +899,6 @@ class RecordingLogWriter:
         os.replace(tmp, path)  # atomic on NTFS
 
     def _session_base(self):
-        # use the SessionLayout you already build in remember_filename()
         from __main__ import last_layout
         return last_layout.paths.get("BASE") if last_layout else None
 
@@ -1010,18 +1008,28 @@ if __name__ == '__main__':
 
     def remember_filename(cmd):
         global last_filename, last_layout
-        if cmd.get('type') == 'fileName':
-            last_filename = cmd.get('value') or "unnamed"
-            log_writer.on_file_name(last_filename)
+        if cmd.get('type') != 'fileName':
+            return
 
-            # Build session layout (date + gloss) and ensure dirs
-            sessions_root = SESSION_PATH
-            last_layout = SessionLayout(gloss=last_filename, sessions_root=sessions_root)
-            last_layout.ensure()
+        new_gloss = cmd.get('value') or "unnamed"
 
-            # Broadcast SetPath for each role (OBS, VICON_CAPTURE, SHOGUN_POST, UNREAL, METADATA)
-            for role, path in last_layout.setpath_messages():
-                disco._notify_command({'type': 'setPath', 'role': role, 'value': path})
+        # prune previous session if it had no data
+        if last_layout and getattr(last_layout, "data_incoming", False) is False:
+            prev_base = last_layout.paths.get("BASE")
+            if prev_base:
+                prune_empty_session_tree(prev_base)
+
+        # switch to the NEW layout
+        last_filename = new_gloss
+        sessions_root = SESSION_PATH
+        last_layout = SessionLayout(gloss=last_filename, sessions_root=sessions_root)
+        last_layout.ensure()
+
+        log_writer.on_file_name(last_filename)
+
+        # broadcast SetPath for each role
+        for role, path in last_layout.setpath_messages():
+            disco._notify_command({'type': 'setPath', 'role': role, 'value': path})
 
     disco.subscribe_commands(remember_filename)
 

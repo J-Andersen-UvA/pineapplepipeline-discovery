@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Tuple
+import shutil
 
 WINDOWS_FORBIDDEN = r'<>:"/\\|?*'
 FORBIDDEN_RE = re.compile(rf'[{re.escape(WINDOWS_FORBIDDEN)}]')
@@ -138,6 +139,7 @@ class SessionLayout:
             schema=self.schema,
             roles_to_subdirs=self.roles_to_subdirs,
         )
+        self.data_incoming = False
 
     def ensure(self):
         ensure_dirs(self.paths)
@@ -152,3 +154,21 @@ class SessionLayout:
         """
         for role, path in self.setpath_messages():
             send_func(f"SetPath {role} {path}")
+
+def prune_empty_session_tree(base: str) -> None:
+    """
+    Remove the previous session folder iff it contains no files.
+    Subfolders are fine; any file anywhere prevents deletion.
+    """
+    if not base or not os.path.isdir(base):
+        return
+    for _, _, files in os.walk(base):
+        # keep if any file exists except if all are .json files
+        if files and not all(f.lower().endswith(".json") for f in files):
+            print(f"[Cleanup] Session not empty, keeping: {base}")
+            return
+    try:
+        shutil.rmtree(base)
+        print(f"[Cleanup] Removed empty session folder: {base}")
+    except Exception as e:
+        print(f"[Cleanup] Failed to remove '{base}': {e}")
