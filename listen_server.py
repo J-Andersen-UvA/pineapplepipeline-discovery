@@ -38,4 +38,5 @@ class ListenServer:
         if self._loop:
             # politely shut down the asyncio loop
             self._loop.call_soon_threadsafe(self._loop.stop)
-            self._thread.join(timeout=1)
+            if self._thread is not None:
+                self._thread.join(timeout=1)

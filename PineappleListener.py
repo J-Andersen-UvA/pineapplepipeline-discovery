@@ -11,6 +11,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from zeroconf import Zeroconf, ServiceBrowser, ServiceStateChange
 from listen_server import ListenServer  # your step-1 script
 import websockets
+from pineapple_paths import SessionLayout
+last_layout = None
 
 import tkinterStyle as tkstyle
 from PluginManager import PluginManager  # your step-2 script
@@ -23,6 +25,7 @@ last_filename = ""
 # Logging
 from logger.recording_log import RecordingLog, _utc_now_iso
 LOG_PATH = yaml.safe_load(open(CONFIG_PATH)).get('logging_path', 'D:\\allRecordings\\Logs')
+SESSION_PATH = yaml.safe_load(open(CONFIG_PATH)).get('session_path', 'E:\\Recordings')
 
 class DiscoveryService:
     def __init__(self, config_path='C:\\Users\\VICON\\Desktop\\Code\\recording\\pineapplediscoverypipeline\\config.yaml', zeroconf_type: str = '_mocap._tcp.local.'):
@@ -360,6 +363,7 @@ class DiscoveryService:
                         self._last_health_response[name] = now
                         self._notify_command({
                             'type':   'health_timeout',
+                            'device': name,                               # ← use the attached_name as the device id
                             'value': state.get('hostname', name)
                         })
                     else:
@@ -744,6 +748,8 @@ class RecordingLogWriter:
             "gloss": None,
             "capture_start": None,
         }
+        self._session_meta_dir = None
+        self._session_json = None   # full path to record_<rid>.json
 
     @staticmethod
     def _new_recording_id() -> str:
@@ -752,21 +758,57 @@ class RecordingLogWriter:
     # --- public event handlers ---
     def on_file_name(self, gloss: str | None):
         self._current["gloss"] = gloss or "unnamed"
+        self._session_meta_dir = self._session_metadata_dir()
+        if self._session_meta_dir:
+            os.makedirs(self._session_meta_dir, exist_ok=True)
 
     def on_record_start(self):
         gloss = self._current.get("gloss") or "unnamed"
         rid = self._new_recording_id()
-        self.log.create_recording(rid, gloss=gloss, capture_start=_utc_now_iso())
-        # Seed placeholders for late Vicon/Shogun post outputs
-        self.log.add_asset(rid, "original_animation_fbx", path=None, machine="Vicon", status="pending_post")
-        self.log.add_asset(rid, "mocap_marker_csv",       path=None, machine="Vicon", status="pending_post")
-        self._current.update({"recording_id": rid, "capture_start": _utc_now_iso()})
+        now = _utc_now_iso()
+
+        # Build the per-session JSON object (your existing schema)
+        record = {
+            "version": "1.0",
+            "recording_id": rid,
+            "gloss": gloss,
+            "capture_start": now,
+            "capture_end": None,
+            "assets": {
+                "blendshape_csv": [],
+                "retargeted_animation_fbx": [],
+                "original_mocap_mcp": [],
+                "video_mkv": [],
+                "original_animation_fbx": [],
+                "mocap_marker_csv": [],
+            },
+            "created_at": now,
+            "updated_at": now,
+        }
+
+        # Decide the file path
+        meta_dir = self._session_meta_dir or self._session_metadata_dir()
+        if not meta_dir:
+            # fallback: drop in session base
+            base = self._session_base() or SESSION_PATH
+            meta_dir = os.path.join(base, "metadata")
+            os.makedirs(meta_dir, exist_ok=True)
+
+        self._session_json = os.path.join(meta_dir, f"record_{rid}.json")
+        self._json_write(self._session_json, record)
+
+        # keep minimal “current” state in memory
+        self._current.update({"recording_id": rid, "capture_start": now})
 
     def on_record_stop(self):
         rid = self._current.get("recording_id")
-        if rid:
-            self.log.set_capture_times(rid, capture_end=_utc_now_iso())
+        if rid and self._session_json:
+            rec = self._json_read(self._session_json) or {}
+            rec["capture_end"] = _utc_now_iso()
+            rec["updated_at"] = _utc_now_iso()
+            self._json_write(self._session_json, rec)
         self._current.update({"recording_id": None, "capture_start": None})
+        self._session_json = self._session_json  # keep for asset updates if they arrive late
 
     def on_asset_ready(self, cmd: dict):
         """
@@ -775,26 +817,97 @@ class RecordingLogWriter:
         Falls back to the most recent record with same gloss if no active id.
         """
         asset_type = cmd.get("asset_type") or ""
-        path       = cmd.get("path")
+        abs_path   = cmd.get("path")
         machine    = cmd.get("machine") or cmd.get("device") or "UNKNOWN"
         mtime      = cmd.get("mtime") or _utc_now_iso()
 
-        rid = self._current.get("recording_id") or ""
+        # Prefer a recording_id on the message; else use current; else last file we created
+        rid_msg = cmd.get("recording_id")
+        target_json = None
 
-        if not rid:
-            hint = cmd.get("recording_hint") or self._current.get("gloss")
-            # search recent records for same gloss (lightweight)
-            recs = self.log.read_all()
-            for rec in reversed(recs[-50:]):
-                if rec.get("gloss") == hint:
-                    rid = rec["recording_id"]
-                    break
-            if not rid:
-                # safety net: never drop files; create a minimal record
-                self.on_record_start()
-                rid = self._current["recording_id"] or ""
+        if rid_msg and self._session_meta_dir:
+            # look for record_<rid>.json in the current session metadata dir
+            candidate = os.path.join(self._session_meta_dir, f"record_{rid_msg}.json")
+            if os.path.exists(candidate):
+                target_json = candidate
 
-        self.log.add_asset(rid, asset_type, path=path, machine=machine, status="ready", mtime=mtime)
+        if not target_json:
+            # fall back to the current session file
+            target_json = self._session_json
+
+        if not target_json or not os.path.exists(target_json):
+            # as a safety net, don’t drop the event—make a minimal record in the current folder
+            gloss = self._current.get("gloss") or cmd.get("recording_hint") or "unnamed"
+            rid   = rid_msg or self._new_recording_id()
+            now   = _utc_now_iso()
+            base_rec = {
+                "version": "1.0",
+                "recording_id": rid,
+                "gloss": gloss,
+                "capture_start": now,
+                "capture_end": None,
+                "assets": { "blendshape_csv": [], "retargeted_animation_fbx": [],
+                            "original_mocap_mcp": [], "video_mkv": [],
+                            "original_animation_fbx": [], "mocap_marker_csv": [] },
+                "created_at": now, "updated_at": now,
+            }
+            meta_dir = self._session_meta_dir or self._session_metadata_dir() or (self._session_base() and os.path.join(self._session_base(), "metadata"))
+            if meta_dir:
+                os.makedirs(meta_dir, exist_ok=True)
+                target_json = os.path.join(meta_dir, f"record_{rid}.json")
+                self._json_write(target_json, base_rec)
+                self._session_json = target_json  # remember for follow-ups
+            else:
+                print("[LogWriter] No metadata directory available; dropping asset_ready")
+                return
+
+        # Normalize to session-relative path if possible
+        rel_path = abs_path
+        try:
+            base = self._session_base()
+            if abs_path and base and os.path.isabs(abs_path):
+                rel_path = os.path.relpath(abs_path, base).replace("\\", "/")
+        except Exception:
+            pass
+
+        # Append asset
+        rec = self._json_read(target_json) or {}
+        assets = rec.setdefault("assets", {})
+        assets.setdefault(asset_type, [])
+        assets[asset_type].append({
+            "path": rel_path,
+            "machine": machine,
+            "status": "ready",
+            "mtime": mtime,
+            "quality": {},
+        })
+        rec["updated_at"] = _utc_now_iso()
+        self._json_write(target_json, rec)
+
+    def _json_read(self, path):
+        if not path or not os.path.exists(path):
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return None
+
+    def _json_write(self, path, data):
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)  # atomic on NTFS
+
+    def _session_base(self):
+        # use the SessionLayout you already build in remember_filename()
+        from __main__ import last_layout
+        return last_layout.paths.get("BASE") if last_layout else None
+
+    def _session_metadata_dir(self):
+        from __main__ import last_layout
+        return last_layout.paths.get("METADATA") if last_layout else None
+
 
 if __name__ == '__main__':
     root = tk.Tk()
@@ -821,19 +934,24 @@ if __name__ == '__main__':
         ctype = cmd.get("type")
 
         # --- log hooks ---
-        if ctype == "recordStart":
-            log_writer.on_record_start()
-        elif ctype == "recordStop":
-            log_writer.on_record_stop()
-        elif ctype == "asset_ready":
-            log_writer.on_asset_ready(cmd)
+        try:
+            if ctype == "recordStart":
+                log_writer.on_record_start()
+            elif ctype == "recordStop":
+                log_writer.on_record_stop()
+            elif ctype == "asset_ready":
+                log_writer.on_asset_ready(cmd)
+        except Exception as e:
+            import traceback
+            print(f"[LogWriter] hook failed for {ctype}: {e}")
+            traceback.print_exc()
 
         # 1) ignore purely discovery‐side events
         if ctype in ("zeroconf", "zeroconf_removed", "dns", "dns_sub"):
             return
 
         # 2) Global broadcasts: things that every checked device should see
-        if ctype in ("recordStart", "recordStop", "fileName"):
+        if ctype in ("recordStart", "recordStop", "fileName", "setPath"):
             for name, var in ui.device_vars.items():
                 if not var.get():
                     continue
@@ -891,31 +1009,55 @@ if __name__ == '__main__':
     disco.subscribe_commands(_dispatch_to_plugins)
 
     def remember_filename(cmd):
-        global last_filename
+        global last_filename, last_layout
         if cmd.get('type') == 'fileName':
-            last_filename = cmd.get('value')
-            log_writer.on_file_name(last_filename)  # keep writer's state in sync
+            last_filename = cmd.get('value') or "unnamed"
+            log_writer.on_file_name(last_filename)
+
+            # Build session layout (date + gloss) and ensure dirs
+            sessions_root = SESSION_PATH
+            last_layout = SessionLayout(gloss=last_filename, sessions_root=sessions_root)
+            last_layout.ensure()
+
+            # Broadcast SetPath for each role (OBS, VICON_CAPTURE, SHOGUN_POST, UNREAL, METADATA)
+            for role, path in last_layout.setpath_messages():
+                disco._notify_command({'type': 'setPath', 'role': role, 'value': path})
 
     disco.subscribe_commands(remember_filename)
 
-    def resend_on_connect(name, ip_and_port):
-        global last_filename
-        if not ip_and_port or not last_filename:
-            return
+    def resend_on_connect(name: str, ip: str, port: int) -> None:
+        global last_filename, last_layout
 
-        # pull apart ip/port if needed
-        ip, port = ip_and_port.split(':') if ':' in ip_and_port else (ip_and_port, disco.server['ws_port'])
+        state = disco.device_states.get(name) or {}
+        sub_ip = state.get("sub_ip")
 
-        enriched = {
-            'type':   'fileName',
-            'device': name,
-            'value':  last_filename,
-            'ip':      ip,
-            'port':    port,
-            'sub_ip':  disco.device_states[name].get('sub_ip')
-        }
-        plugin_mgr.handle(name, enriched)
-        print(f"[Reconnect] sent last filename {last_filename!r} → {name} @ {ip}:{port}")
+        # resend last gloss
+        if last_filename:
+            cmd = {
+                "type": "fileName",
+                "value": last_filename,
+                "ip": ip,
+                "port": port,
+                "device": name,
+            }
+            if sub_ip:
+                cmd["sub_ip"] = sub_ip
+            plugin_mgr.handle(name, cmd)
+
+        # resend all SetPath
+        if last_layout:
+            for role, path in last_layout.setpath_messages():
+                cmd = {
+                    "type": "setPath",
+                    "role": role,
+                    "value": path,
+                    "ip": ip,
+                    "port": port,
+                    "device": name,
+                }
+                if sub_ip:
+                    cmd["sub_ip"] = sub_ip
+                plugin_mgr.handle(name, cmd)
 
     disco.subscribe_devices(resend_on_connect)
 

@@ -1,5 +1,5 @@
 # scripts/Shoguninterface.py
-import asyncio, threading, websockets
+import asyncio, threading, websockets, json
 
 _send_response = None
 _cfg           = None
@@ -26,7 +26,7 @@ def handle_message(cmd: dict):
     We only react to the types we care about.
     """
     ctype = cmd.get("type")
-    if ctype not in ("recordStart", "recordStop", "broadcastGlos", "fileName", "health"):
+    if ctype not in ("recordStart", "recordStop", "broadcastGlos", "fileName", "health", "setPath"):
         return
 
     ip   = cmd.get("ip")
@@ -71,6 +71,9 @@ async def _send_to_shogun(cmd: dict):
                         "value":  ok,
                         "msg":    reply
                     })
+                return
+
+            await _pump_incoming(ws, device)
 
     except Exception as e:
         # on any error, report failure for health
@@ -82,6 +85,35 @@ async def _send_to_shogun(cmd: dict):
                     "value":  False
                 })
         print(f"[ShogunInterface] Error talking to {uri}: {e}")
+
+async def _pump_incoming(ws, device: str, idle_timeout: float = 5.0, overall_cap: float = 30.0):
+    """
+    Read frames until idle_timeout or overall_cap.
+    Any JSON object received is forwarded into the pipeline via _send_response.
+    """
+    loop = asyncio.get_event_loop()
+    started = loop.time()
+    last_rx = started
+    while True:
+        now = loop.time()
+        if (now - last_rx) > idle_timeout or (now - started) > overall_cap:
+            break
+        try:
+            frame = await asyncio.wait_for(ws.recv(), timeout=idle_timeout)
+            last_rx = loop.time()
+
+            try:
+                obj = json.loads(frame)
+                if isinstance(obj, dict) and _send_response is not None:
+                    # Send straight back onto Pineapple’s command bus
+                    _send_response(obj)
+                else:
+                    print("[ShogunInterface] Ignoring non-dict WS frame:", obj)
+            except json.JSONDecodeError:
+                print("[ShogunInterface] Non-JSON frame:", str(frame)[:120])
+
+        except asyncio.TimeoutError:
+            break
 
 def _build_payload(cmd: dict) -> str | None:
     """
@@ -97,4 +129,9 @@ def _build_payload(cmd: dict) -> str | None:
         return f"SetName {cmd.get('value','')}"
     if t == "health":
         return "health"
+    if t == "setPath":
+        role = cmd.get("role")
+        if role != "VICON_CAPTURE":
+            return None  # ignore paths that aren't for Shogun Live
+        return f"SetPath {cmd['value']}"
     return None

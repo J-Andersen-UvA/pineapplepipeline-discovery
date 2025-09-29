@@ -1,9 +1,9 @@
 devices:
-  - hostname: LiveLinkFaceServer._mocap._tcp.local
-    attached_name: LLF server
-    script: "scripts/LLFinterface.py"
-    subname: Vislabs-iPhone.local
-    attached_subname: iPhone Vislab
+  # - hostname: LiveLinkFaceServer._mocap._tcp.local
+  #   attached_name: LLF server
+  #   script: "scripts/LLFinterface.py"
+  #   subname: Vislabs-iPhone.local
+  #   attached_subname: iPhone Vislab
   # - hostname: Vislabs-iPhone.local
   #   attached_name: iPhone Vislab
   #   script: "scripts/example.py"
@@ -27,5 +27,8 @@ listen_server:
   module: unrealServer
   entrypoint: receive_messages
   uri: wss://signcollect.nl/unrealServer/
+  # uri: ws://localhost:8043/unrealServer
 
-logging_path: D:/allRecordings/Logs/
+logging_path: "D:\\allRecordings\\Logs\\recordings.jsonl"
+
+session_path: "E:\\Recordings"

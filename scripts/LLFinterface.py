@@ -1,4 +1,4 @@
-import asyncio, threading, websockets
+import asyncio, threading, websockets, json
 
 _send_response = None
 _cfg           = None
@@ -25,7 +25,7 @@ def handle_message(cmd: dict):
     We only react to the types we care about.
     """
     ctype = cmd.get("type")
-    if ctype not in ("recordStart", "recordStop", "broadcastGlos", "fileName", "health"):
+    if ctype not in ("recordStart", "recordStop", "broadcastGlos", "fileName", "health", "setPath"):
         return
 
     ip   = cmd.get("ip")
@@ -51,19 +51,15 @@ async def _send_to_llf(cmd : dict):
     if payload is None:
         return
     elif payload == "health":
-        # In addition to the health check, we will also send over the sub_ip
-        sub_ip = cmd.get("sub_ip", None)
+        # best-effort hint: include sub_ip if present, else try device IP
+        sub_ip = cmd.get("sub_ip")
         if sub_ip:
             payload += f" {sub_ip}"
-        # If we are missing the sub_ip, we will respond immediately with False
         else:
-            if _send_response is not None:
-                _send_response({
-                    "type":   "health_response",
-                    "device": device,
-                    "value":  False
-                })
-            return
+            maybe_ip = cmd.get("ip")
+            if maybe_ip:
+                payload += f" {maybe_ip}"
+
 
     try:
         async with websockets.connect(uri) as ws:
@@ -73,14 +69,27 @@ async def _send_to_llf(cmd : dict):
             # if it's a health check, block until the one reply
             if cmd["type"] == "health":
                 reply = await asyncio.wait_for(ws.recv(), timeout=5)
-                ok = (reply == "Good")
+
+                ok, msg = False, ""
+                # accept both JSON and legacy string replies
+                try:
+                    data = json.loads(reply)
+                    if isinstance(data, dict) and data.get("type") == "health_response":
+                        ok  = bool(data.get("value", False))
+                        msg = data.get("msg", "")
+                    else:
+                        ok  = (reply == "Good")
+                        msg = reply if not ok else ""
+                except Exception:
+                    ok  = (reply == "Good")
+                    msg = reply if not ok else ""
+
                 if _send_response is not None:
-                    # send the health response back to PineappleListener
                     _send_response({
                         "type":   "health_response",
                         "device": device,
                         "value":  ok,
-                        "msg":    reply,
+                        "msg":    msg,
                     })
 
     except Exception as e:
@@ -108,4 +117,6 @@ def _build_payload(cmd: dict) -> str | None:
         return f"SetName {cmd.get('value','')}"
     if t == "health":
         return "health"
+    if t == "setPath":
+        return f"SetPath {cmd['value']}"
     return None

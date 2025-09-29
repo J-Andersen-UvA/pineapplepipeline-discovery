@@ -1,5 +1,5 @@
 # scripts/OBSinterface.py
-import asyncio, threading, websockets
+import asyncio, threading, websockets, json
 
 _send_response = None
 _cfg           = None
@@ -26,7 +26,7 @@ def handle_message(cmd: dict):
     We only react to the types we care about.
     """
     ctype = cmd.get("type")
-    if ctype not in ("recordStart", "recordStop", "broadcastGlos", "fileName", "health"):
+    if ctype not in ("recordStart", "recordStop", "broadcastGlos", "fileName", "health", "setPath"):
         return
 
     ip   = cmd.get("ip")
@@ -48,6 +48,7 @@ async def _send_to_obs(cmd: dict):
     if _cfg is None or "attached_name" not in _cfg:
         print("[OBSInterface] Error: _cfg is not initialized or missing 'attached_name'")
         return
+
     device = _cfg["attached_name"]
     uri    = f"ws://{cmd['ip']}:{cmd['port']}"
     payload = _build_payload(cmd)
@@ -70,6 +71,9 @@ async def _send_to_obs(cmd: dict):
                         "value":  ok,
                         "msg":    reply
                 })
+                return
+            
+            await _pump_incoming(ws, device)
 
     except Exception as e:
         # on any error, report failure for health
@@ -81,6 +85,36 @@ async def _send_to_obs(cmd: dict):
                     "value":  False
                 })
         print(f"[OBSInterface] Error talking to {uri}: {e}")
+
+async def _pump_incoming(ws, device: str, idle_timeout: float = 5.0, overall_cap: float = 30.0):
+    """
+    Read frames until we've been idle for `idle_timeout` seconds or hit `overall_cap`.
+    Any JSON object received is forwarded into the pipeline via _send_response.
+    """
+    started = asyncio.get_event_loop().time()
+    last_rx = started
+    while True:
+        now = asyncio.get_event_loop().time()
+        if (now - last_rx) > idle_timeout or (now - started) > overall_cap:
+            break
+        try:
+            frame = await asyncio.wait_for(ws.recv(), timeout=idle_timeout)
+            last_rx = asyncio.get_event_loop().time()
+
+            # Try JSON → forward; otherwise ignore (legacy string replies)
+            try:
+                obj = json.loads(frame)
+                if isinstance(obj, dict):
+                    if _send_response is not None:
+                        _send_response(obj)  # PluginManager re-adds {"device": <name>, ...}
+                else:
+                    print("[OBSInterface] Ignoring non-dict WS frame:", obj)
+            except json.JSONDecodeError:
+                # Allow plain strings like "OK", "Done", etc.
+                print("[OBSInterface] Non-JSON frame:", str(frame)[:120])
+        except asyncio.TimeoutError:
+            # idle window elapsed → stop
+            break
 
 def _build_payload(cmd: dict) -> str | None:
     """
@@ -96,4 +130,9 @@ def _build_payload(cmd: dict) -> str | None:
         return f"SetName {cmd.get('value','')}"
     if t == "health":
         return "health"
+    if t == "setPath":
+        role = cmd.get("role")
+        if role != "OBS":
+            return None  # ignore paths that aren't for Shogun Live
+        return f"SetPath {cmd['value']}"
     return None
