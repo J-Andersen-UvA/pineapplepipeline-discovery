@@ -771,6 +771,7 @@ class RecordingLogWriter:
             "version": "1.0",
             "recording_id": rid,
             "gloss": gloss,
+            "root_dir": self._session_base(),
             "capture_start": now,
             "capture_end": None,
             "assets": {

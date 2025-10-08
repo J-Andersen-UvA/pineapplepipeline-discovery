@@ -57,11 +57,12 @@ class RecordingLog:
         return None
 
     @staticmethod
-    def new_record(recording_id: str, gloss: str, capture_start: Optional[str] = None, capture_end: Optional[str] = None):
+    def new_record(recording_id: str, gloss: str, capture_start: Optional[str] = None, capture_end: Optional[str] = None, root_dir: Optional[str] = None):
         now = _utc_now_iso()
         rec = {
             "version": SCHEMA_VERSION,
             "recording_id": recording_id,
+            "root_dir": root_dir,
             "gloss": gloss,
             "capture_start": capture_start or now,
             "capture_end": capture_end or None,
@@ -96,7 +97,7 @@ class RecordingLog:
     def create_recording(self, recording_id: str, gloss: str, capture_start: Optional[str] = None, capture_end: Optional[str] = None):
         if self.get_record(recording_id) is not None:
             raise ValueError(f"Recording with id '{recording_id}' already exists.")
-        rec = self.new_record(recording_id, gloss, capture_start, capture_end)
+        rec = self.new_record(recording_id, gloss, capture_start, capture_end, self.path)
         with open(self.path, "a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(rec, ensure_ascii=False, separators=(",", ":")) + "\n")
         return rec
