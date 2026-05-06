@@ -17,6 +17,8 @@ last_layout = None
 import tkinterStyle as tkstyle
 from PluginManager import PluginManager  # your step-2 script
 
+import endpointSender
+
 CONFIG_PATH = 'C:\\Users\\VICON\\Desktop\\Code\\recording\\pineapplediscoverypipeline\\config.yaml'
 MAX_MESSAGE_LENGTH = 100  # max length of messages in the UI
 
@@ -883,6 +885,7 @@ class RecordingLogWriter:
         })
         rec["updated_at"] = _utc_now_iso()
         self._json_write(target_json, rec)
+        endpointSender.send(rec)
 
     def _json_read(self, path):
         if not path or not os.path.exists(path):
