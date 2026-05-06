@@ -16,6 +16,9 @@ devices:
   - hostname: OBS
     attached_name: OBS
     script: "scripts/OBSinterface.py"
+  - hostname: BlackmagicCamera._mocap._tcp.local
+    attached_name: Blackmagic Camera
+    script: "scripts/BlackmagicInterface.py"
 
 server:
   ws_port: 8766
